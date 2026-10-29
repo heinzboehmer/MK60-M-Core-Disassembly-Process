@@ -1,5 +1,5 @@
 // Dump disassembly at given addresses. Headless usage:
-//   tools/ghidra/dump.sh <addr[:count]> ...
+//   tools/ghidra/dump.sh <proj_dir> <name> <cpu_hex_path> <addr[:count]> ...
 // Each arg is "ADDR" or "ADDR:COUNT" (hex, default 40 instructions).
 // Walks addresses sequentially: disassembles on demand, and prints undecodable
 // halfwords as ".hword" instead of skipping ahead. Run on a snapshot (dump.sh).

@@ -208,7 +208,7 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
 | `tools/ghidra/mcore_import.sh` | step 1: arch-check + parse + import + `CreateMemBlocks` |
 | `tools/ghidra/mcore_recover.sh` | step 2: auto-bounds + full recover + finish chain |
 | `tools/ghidra/mcore_port.sh` | step 3: `ExportSigs` ×2 + match + `ApplyPortedNames` |
-| `tools/ghidra/dump.sh ADDR:N …` | read-only disassembly dump from a snapshot (GUI may be open) |
+| `tools/ghidra/dump.sh <proj_dir> <name> <cpu_hex> ADDR:N …` | read-only disassembly dump from a snapshot (GUI may be open) |
 
 ### Ghidra scripts (`tools/ghidra/scripts/*.java`, run via `-postScript`)
 

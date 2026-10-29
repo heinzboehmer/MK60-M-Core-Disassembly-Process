@@ -48,5 +48,5 @@ echo ">> import $HEX  ->  $PROJ_DIR / $PROJ_NAME"
     -postScript CreateMemBlocks.java \
     -overwrite \
     -analysisTimeoutPerFile 1200 2>&1 \
-  | grep -E "CreateMemBlocks:|Unable to lock|ERROR|Exception" || true
+  | grep -E "CreateMemBlocks|created |skip |FAILED |Unable to lock|ERROR|Exception" || true
 echo ">> imported.  program name in project = $(basename "$HEX")"

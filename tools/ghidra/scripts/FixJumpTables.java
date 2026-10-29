@@ -10,7 +10,7 @@
 //  3. Collect every entry's target; disassemble + functionize each target that is undefined,
 //     decodes cleanly (PseudoDisassembler reaches an unconditional terminator, 0 invalid),
 //     and does NOT itself land inside a table region.
-// Follow with FixLiteralPools/FixResidual. Read MINRUN from args (default 4).
+// Follow with FixLiteralPools/FixResidual. Args: LO HI [MINRUN] (hex, hex, decimal; MINRUN default 4).
 //@category MK60
 import ghidra.app.script.GhidraScript;
 import ghidra.app.util.PseudoDisassembler;
@@ -33,7 +33,7 @@ public class FixJumpTables extends GhidraScript {
         pd = new PseudoDisassembler(currentProgram);
         int minRun = 4;
         String[] a = getScriptArgs();
-        if (a.length >= 1) minRun = Integer.parseInt(a[0]);
+        if (a.length >= 3) minRun = Integer.parseInt(a[2]);   // args[0..1] are LO HI
 
         // 1. find table runs
         ArrayList<long[]> tables = new ArrayList<>();   // {start, entries}

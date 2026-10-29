@@ -59,4 +59,4 @@ ARGS+=( -postScript DataSectionClean.java "$DLO" "$DATA_HI"
     -process "$PROG" -noanalysis \
     -scriptPath "$ROOT/tools/ghidra/scripts" \
     "${ARGS[@]}" 2>&1 \
-  | grep -E "Recover|FixLiteralPools:|FixJumpTables:|FixResidual:|RetraceBodies:|DataSectionClean|FixStorage2:|ClassifyData:|ApplyDataTypes:|ClearAnalysisBookmarks:|CountErr:|Unable to lock|ERROR|Exception" || true
+  | grep -E "Recover|FixLiteralPools:|FixJumpTables:|FixResidual:|RetraceBodies:|DataSectionClean|FixStorage2:|ClassifyData:|ApplyDataTypes:|ClearAnalysisBookmarks:|CountErr:|Error bookmarks=|Unable to lock|ERROR|Exception" || true

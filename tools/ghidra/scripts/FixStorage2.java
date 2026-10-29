@@ -22,7 +22,7 @@ public class FixStorage2 extends GhidraScript {
         }
         println("FixStorage2: fixed=" + fixed);
         for (long a : new long[]{0xb2096L,0x790feL,0xa37eeL}) {
-            Function f=getFunctionAt(toAddr(a));
+            Function f=getFunctionAt(toAddr(a)); if (f==null) continue;   // DSCM90 sample addrs; absent in other images
             println(String.format("  %06x %s conv=%s storage=%s", a, f.getName(), f.getCallingConventionName(), f.getReturn().getVariableStorage().toString()));
         }
     }
