@@ -20,10 +20,13 @@ In short, from the repo root (bring your own image — none is included):
 # 1. arch-check + parse + import + map RAM/MMIO
 tools/ghidra/mcore_import.sh <image.0pa> <proj_dir> <name>
 
-# 2. recover + finish (GUI closed). Bounds are detected automatically.
+# 2. recover + finish (GUI closed). Bounds are detected automatically; repeats until converged.
 tools/ghidra/mcore_recover.sh <proj_dir> <name> <image.cpu.hex>
 
-# 3. (optional) port names from an already-named reference project
+# 3. verify (read-only, GUI may be open). Exit 0 == clean; the summary is the report.
+tools/ghidra/mcore_verify.sh <proj_dir> <name> <image.cpu.hex>
+
+# 4. (optional) port names from an already-named reference project
 tools/ghidra/mcore_port.sh <src_proj> <src_name> <src.cpu.hex> <proj_dir> <name> <image.cpu.hex>
 ```
 

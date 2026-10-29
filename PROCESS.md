@@ -30,10 +30,12 @@ The scripts here fix all of that. The boundaries that bound the work are found *
                         →  FixLiteralPools
                         →  [RecoverRefCode · RecoverCodeRuns · RecoverFlowCode ·
                             FixJumpTables · FixLiteralPools · FixResidual · RetraceBodies] ×N
-                        →  DataSectionClean auto  (auto-pins dataLO = last real fn end)
-                        →  FixStorage2 → ClassifyData · ApplyDataTypes → ClearAnalysisBookmarks → CountErr
+                        →  DataSectionClean auto  (auto-pins dataLO = last real fn end → <prog>.bounds)
+                        →  FixStorage2 → ClassifyData · ApplyDataTypes → ClearAnalysisBookmarks
+                        →  ScanMisdisasm · CountErr
+                        ] × rounds, until the last recovery pass adds nothing
  (3) mcore_port.sh      (optional) carry names over from an already-named reference project
- (V) verify + quantify the memory map
+ (V) mcore_verify.sh    verify + quantify the memory map (read-only, GUI may be open)
 ```
 
 Run everything from the repo root. Each driver prints a one-line usage if under-argued. In the
@@ -41,6 +43,10 @@ examples `<proj_dir>` is any directory you pick for the Ghidra project and `<nam
 
 Close the Ghidra GUI for any step that writes back (import and recover) — Ghidra takes an exclusive
 project lock; a step that prints `Unable to lock` means the GUI is still open.
+
+Every driver exits non-zero when its headless session fails or its result isn't clean (see each
+script's header), and keeps the full Ghidra log under `<proj_dir>/` — so they are safe to chain and
+a crash can't masquerade as success.
 
 ---
 
@@ -65,6 +71,10 @@ tools/ghidra/mcore_import.sh <image.0pa | image.cpu.hex> <proj_dir> <name>
 
 The program's name inside the project is the `.cpu.hex` basename (e.g. `7846816A.cpu.hex`).
 
+Auto-analysis logs a handful of `Failed to create function at … since its body contains referring
+thunk` errors on every image (tail-call stubs it mistakes for thunks). The driver reports them as a
+count and Step 2's `RetraceBodies` fixes them — they are not a problem with the import.
+
 After this step the project is **red** (literal-pool errors) and the calibration section is full of
 spurious functions. Expected — Step 2 clears it.
 
@@ -76,8 +86,12 @@ spurious functions. Expected — Step 2 clears it.
 tools/ghidra/mcore_recover.sh <proj_dir> <name> <cpu_hex_path> [passes]
 ```
 
-One headless session does the whole thing, including working out its own address bounds. `passes`
-(default 6) iterates the recovery loop to convergence.
+One headless session runs the recovery loop (`passes` iterations, default 6) and then the finish
+chain. The finish chain can expose seeds the loop never saw (a newly typed pointer, a cleaned table
+edge), so the driver repeats that session — up to `ROUNDS` (env, default 4) — **until the last pass
+of a round creates no functions and reverts nothing**. It prints `round N: lastPassWork=…` after
+each round and `DONE: converged …` at the end; a `NOT converged` message means raise `ROUNDS` or
+`passes` (or just re-run — it resumes).
 
 ### How the boundaries are found — no hardcoded addresses
 
@@ -100,6 +114,13 @@ where `codeHI == dataLO`. The driver determines them for *any* image:
   function that *starts with the prologue*. Because spurious data-region functions never start with
   the prologue, that's the true code/data boundary — and the clean step additionally **never deletes
   or clears a prologue-started function**, so a slightly-off estimate can't damage real code.
+
+- The pinned `dataLO` is written to **`<proj_dir>/<prog>.bounds`** (`CODE_LO`/`DATA_LO`/`DATA_HI`).
+  Every later round and re-run uses it as the recovery ceiling (`CODE_HI`), because `find_boundary`'s
+  `codeHI` is only an estimate a few KB *above* the real boundary: without the sidecar each run
+  re-disassembles that gap and `DataSectionClean` deletes it again (tens of functions, thousands of
+  instructions of churn per run). `mcore_verify.sh` reads the same file. Delete it, or set `CODE_HI`,
+  to start from the estimate again.
 
 Override any bound via env (hex, no `0x`): `CODE_LO`, `CODE_HI`, `DATA_HI`; set `DATA_LO=<hex>` to
 pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verdict. You can also run
@@ -125,12 +146,15 @@ pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verd
 | `FixStorage2` | assigns return storage (`r2`) to recovered functions — kills `<UNASSIGNED> RETURN` warnings |
 | `ClassifyData` | sizes referenced-but-undefined data to `undefined1/2/4` from ld/st access width; drops VBR=0 default vector symbols |
 | `ApplyDataTypes /dev/null` | turns those into stdint typedefs (`uint8/16/32_t`) so the listing reads like C; guarded to only re-type Undefined/own-typedefs/auto byte-word-dword |
-| `ClearAnalysisBookmarks` | removes the orange breadcrumb bookmarks (**must be last**) |
+| `ClearAnalysisBookmarks` | removes the orange breadcrumb bookmarks (**must be last** of the writers) |
+| `ScanMisdisasm LO HI` | read-only: pointer tables still sitting inside instructions (**want 0**) |
 | `CountErr` | error-bookmark count (**want 0**) + function count |
 
-**Done looks like:** `CountErr` error bookmarks `= 0`; the data section shows `code=0`; function count
-in the low thousands (not 8000+, which means the data section wasn't cleaned). Re-run (idempotent) or
-raise `passes` if anything remains.
+**Done looks like:** the driver prints `DONE: converged, 0 error bookmarks, 0 mis-disassembled
+tables` and exits 0; function count in the low thousands (not 8000+, which means the data section
+wasn't cleaned). `CountErr = 0` on its own is **not** enough — it was already 0 after a run whose
+last pass was still adding functions. If the driver exits 4, re-run it (idempotent; it resumes from
+the sidecar bounds) or raise `ROUNDS`/`passes`.
 
 ---
 
@@ -161,7 +185,15 @@ The image is already fully recovered after Step 2 — porting is about readabili
 
 ## Verify & quantify the memory map
 
-Read-only scanners (snapshot-safe — they work with the GUI open; `dump.sh` shows the snapshot idiom):
+```bash
+tools/ghidra/mcore_verify.sh <proj_dir> <name> <image.cpu.hex>      # FULL=1 for every table row
+```
+
+One read-only run against a snapshot of the project (the GUI may stay open). It takes the bounds
+from `<prog>.bounds`, runs the scanners below, and prints a summary — error bookmarks, mis-disassembled
+table runs, code bytes in the data section (all want 0), function count, table-base count, and the
+function count in the region below `codeLO` — exiting 4 if anything isn't clean. The individual
+scanners, if you want one on its own (`dump.sh` shows the snapshot idiom):
 
 - **`CountErr.java`** — error bookmarks (want 0) + function count. The headline health check.
 - **`ImageMap.java`** — every block + the code/defined-data/undefined landscape; confirms where
@@ -172,6 +204,8 @@ Read-only scanners (snapshot-safe — they work with the GUI open; `dump.sh` sho
   section: how you quantify the data map (grouped by reader subsystem).
 - **`UpperScan.java [LO]`** — classify undefined/code runs from an address up (PADDING / MONOTONIC /
   PTRTABLE / CODELIKE / OTHER).
+- **`RegionStats.java LO HI`** — functions / instructions / undefined bytes in a range; the verify
+  driver uses it for the data section (want `instrBytes=0`) and the region below `codeLO`.
 
 Record, per image: the MISR-signed spans (from the in-ECU self-test range table), `find_boundary.py`'s
 bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the RAM/MMIO blocks.
@@ -185,11 +219,23 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
 - **Don't force-disassemble the residual `??`.** After recovery, remaining undefined in the code
   region is literal/inline pools (data), and `??` in RAM is uninitialized (correct). The data section
   is *supposed* to be undefined-then-labeled.
+- **Below `codeLO` (0x40000–0x41FFF) is left as auto-analysis made it.** That region is the VBR
+  table, the calibration directory and the OSEK init stubs; the pipeline never cleans it, so expect a
+  few dozen tiny (2–24 byte) `FUN_` functions there and `0xFFFF` padding decoded as `bsr`. They raise
+  no error bookmark and don't affect the code region. `mcore_verify.sh` reports the count so it is
+  visible; `OsInit.java` disassembles the real init stubs if you need them, and `ForceData.java`
+  reverts a specific spurious one.
 - **Trust the auto boundary, but glance at it.** `DataSectionClean auto` prints the pinned `dataLO`;
   it's the end of the last prologue function. If a disassembly looks truncated at the top of the code,
   check that number and the `ImageMap` landscape.
 - **2-byte-body quirk.** A scripted headless `createFunction` can leave a 2-byte function body —
-  harmless, the decompiler follows flow. Remove+recreate backfires; leave it.
+  harmless, the decompiler follows flow. Remove+recreate backfires; leave it. Its tell in the log is a
+  `RetraceBodies: … truncatedFound=1 retraced=1` on *every* pass, with the same address in the
+  `retraced entries:` line that follows.
+- **`FixLiteralPools: … ramRefsSkipped=N failed=M`.** Absolute `ld`/`st` references into RAM look
+  like pool slots but are variables in an uninitialized block, so they are skipped and counted (large
+  N is normal). `failed` is the rare slot that can't be typed at all (its 4 bytes run off the end of a
+  block); the line names it with the exception. Both are constant across passes and not errors.
 - **`Flow Override: CALL_RETURN (COMPUTED_CALL_TERMINATOR)`** on a `jmpi`/`br` is a benign tail call.
 - **Single-site fixes:** `ForceFn.java` (clear+disassemble+functionize one address), `ForceData.java`
   (revert to data), `FixFnEntry.java` (re-root a late-seeded entry). Avoid whole-body "repair" clears —
@@ -206,8 +252,9 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
 | `tools/find_boundary.py` | prologue-scan: arch check + programmatic codeHI/dataHI from a `.cpu.hex` |
 | `tools/port_symbols.py` | signature 1:1 matcher; writes `ported.tsv` + `tail.txt` |
 | `tools/ghidra/mcore_import.sh` | step 1: arch-check + parse + import + `CreateMemBlocks` |
-| `tools/ghidra/mcore_recover.sh` | step 2: auto-bounds + full recover + finish chain |
+| `tools/ghidra/mcore_recover.sh` | step 2: auto-bounds + recover + finish, repeated until converged; writes `<prog>.bounds` |
 | `tools/ghidra/mcore_port.sh` | step 3: `ExportSigs` ×2 + match + `ApplyPortedNames` |
+| `tools/ghidra/mcore_verify.sh` | V: read-only health check + memory-map numbers in one run (snapshot; GUI may be open) |
 | `tools/ghidra/dump.sh <proj_dir> <name> <cpu_hex> ADDR:N …` | read-only disassembly dump from a snapshot (GUI may be open) |
 
 ### Ghidra scripts (`tools/ghidra/scripts/*.java`, run via `-postScript`)
@@ -234,9 +281,10 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | `ExportSigs.java` | 3 — per-function porting signatures | `<out.sigs>` |
 | `ApplyPortedNames.java` | 3 — apply `addr<TAB>name` table | `<ported.tsv>` |
 | `ImageMap.java` | V — block list + code/data/undefined landscape | — |
-| `ScanMisdisasm.java` | V — detect table-as-code (want 0) | — |
+| `ScanMisdisasm.java` | 2/V — detect table-as-code (want 0) | `[LO HI]` |
 | `DataTableInventory.java` | V — harvest code-referenced table bases | `[DATA_LO DATA_HI]` |
 | `UpperScan.java` | V — classify undefined/code runs from an address up | `[LO]` |
+| `RegionStats.java` | V — functions/instructions/undefined bytes in a range | `LO HI [listMax]` |
 | `DumpAt.java` | V — dump disassembly at `ADDR:N` (via `dump.sh`) | `ADDR:N …` |
 | `ForceFn.java` | fix — clear+disassemble+functionize one address | `<addrHex=name …>` |
 | `ForceData.java` | fix — revert addresses to data | `<addrHex …>` |

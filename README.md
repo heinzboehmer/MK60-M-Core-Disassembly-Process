@@ -26,9 +26,15 @@ points to it so Claude Code auto-discovers it.
    # 2. recover + finish (GUI closed). Bounds are detected automatically.
    tools/ghidra/mcore_recover.sh projects/MK60 MK60 /path/to/<part>.cpu.hex
 
-   # 3. (optional) carry names over from an already-named reference project
+   # 3. verify (read-only; GUI may be open) — exits 0 only when the project is clean
+   tools/ghidra/mcore_verify.sh projects/MK60 MK60 /path/to/<part>.cpu.hex
+
+   # 4. (optional) carry names over from an already-named reference project
    tools/ghidra/mcore_port.sh projects/REF REF ref.cpu.hex projects/MK60 MK60 <part>.cpu.hex
    ```
+
+   `mcore_recover.sh` repeats its recover-and-finish session until a pass adds nothing, and every
+   driver exits non-zero on a failed or unclean run, so the three can be chained with `&&`.
 
    The reasoning, per-script reference, verification, and gotchas are in **[PROCESS.md](PROCESS.md)**.
 
@@ -48,7 +54,7 @@ tools/
   patches/                mcore.patch, mcore.cspec, make_mcore_patch.py
   ghidra-mcore/           vendored CUB3D M·CORE Ghidra module (Apache-2.0)
   ghidra/
-    mcore_import.sh  mcore_recover.sh  mcore_port.sh  dump.sh
+    mcore_import.sh  mcore_recover.sh  mcore_verify.sh  mcore_port.sh  dump.sh
     scripts/*.java        the Ghidra analysis scripts the drivers run
 ```
 

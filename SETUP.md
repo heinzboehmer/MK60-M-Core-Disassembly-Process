@@ -85,9 +85,10 @@ tools/ghidra/mcore_import.sh /path/to/<part>.0pa projects/smoke SMOKE
 ```
 
 A good import first prints the arch sanity check (`prologues found: …` and a `BOUNDS arch=mcore …`
-line), then logs `CreateMemBlocks:` adding the RAM/MMIO blocks, with no `Unable to lock` /
-language-not-found error. (The project will be full of red errors at this stage — that's expected;
-`mcore_recover.sh` clears them.) You can then open it in the Ghidra GUI to confirm the listing shows
+line), then logs `CreateMemBlocks` adding the RAM/MMIO blocks, with no `Unable to lock` /
+language-not-found error, and exits 0 (it exits 1 and names the log otherwise). A line counting
+`'referring thunk' CreateFunctionCmd errors` is normal — see PROCESS.md Step 1. (The project will be
+full of red errors at this stage — that's expected; `mcore_recover.sh` clears them.) You can then open it in the Ghidra GUI to confirm the listing shows
 M·CORE mnemonics (`lrw`, `jmpi`, `jsri`, `bsr`, `jmp r15`).
 
 > **Fed the wrong image?** `mcore_import.sh` runs `find_boundary.py` up front and warns
@@ -110,7 +111,8 @@ corpus; this repo doesn't vendor it, and it never gates the pipeline.
 | `JAVA_HOME` | `.../temurin-25.jdk/Contents/Home` | different JDK |
 
 `mcore_recover.sh` also accepts bound overrides via env (`CODE_LO`/`CODE_HI`/`DATA_HI`/`DATA_LO`,
-hex, no `0x`) and `FORCE=1` — see [PROCESS.md](PROCESS.md) Step 2. You normally don't need them.
+hex, no `0x`), `ROUNDS` (max recover-and-finish repetitions, default 4) and `FORCE=1` — see
+[PROCESS.md](PROCESS.md) Step 2. You normally don't need them.
 
 ## Troubleshooting
 

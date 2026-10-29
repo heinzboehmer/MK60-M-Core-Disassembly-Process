@@ -59,5 +59,13 @@ public class RetraceBodies extends GhidraScript {
         }
         println("RetraceBodies: removedSpurious=" + removed + " truncatedFound=" + trunc.size()
                 + " retraced=" + retraced + " failed=" + failed);
+        // Name the few that were retraced so a function that re-appears here on EVERY pass
+        // can be identified: that is the headless 2-byte-body quirk (createFunction leaves a
+        // 2-byte body whose fall-through is always "outside"), harmless — see PROCESS.md.
+        if (!trunc.isEmpty() && trunc.size() <= 8) {
+            StringBuilder sb = new StringBuilder("RetraceBodies: retraced entries:");
+            for (Object[] t : trunc) sb.append(' ').append(Long.toHexString((Long) t[0])).append('=').append((String) t[1]);
+            println(sb.toString());
+        }
     }
 }

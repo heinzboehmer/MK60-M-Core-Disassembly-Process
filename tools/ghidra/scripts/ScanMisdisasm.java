@@ -2,16 +2,19 @@
 // addresses in the code range; a run of >=4 consecutive 4-byte words that are all code-
 // range pointers AND currently sit inside instructions is almost certainly a jump/pointer
 // table decoded as code (coincidence for a 4-run ~1e-16). Report each run.
+// Args: LO HI (hex, no 0x) — the code region; defaults to 0x42000/0xD7000.
 //@category MK60
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.mem.Memory;
 
 public class ScanMisdisasm extends GhidraScript {
-    private static final long LO = 0x42000L, HI = 0xD7000L;
+    private long LO = 0x42000L, HI = 0xD7000L;
 
     @Override
     public void run() throws Exception {
+        String[] _a = getScriptArgs();
+        if (_a.length >= 2) { LO = Long.parseLong(_a[0], 16); HI = Long.parseLong(_a[1], 16); }
         Memory mem = currentProgram.getMemory();
         int runs = 0; long totalBytes = 0;
         long runStart = -1; int runLen = 0;

@@ -21,7 +21,7 @@ import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.data.*;
 import ghidra.program.model.listing.*;
-import ghidra.program.model.mem.Memory;
+import ghidra.program.model.mem.*;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.RefType;
 import java.util.*;
@@ -43,6 +43,7 @@ public class FixLiteralPools extends GhidraScript {
 
         // Pool slots: in-memory read/data targets of instructions (lrw/jsri/jmpi ...).
         HashSet<Long> pool = new HashSet<>();
+        int ramRefs = 0;
         InstructionIterator iit = listing.getInstructions(true);
         while (iit.hasNext()) {
             Instruction ins = iit.next();
@@ -52,7 +53,9 @@ public class FixLiteralPools extends GhidraScript {
                 if (to == null || !to.isMemoryAddress()) continue;
                 if (rt.isFlow()) { codeTargets.add(to.getOffset()); continue; }
                 if (rt.isWrite() || !(rt.isRead() || rt.isData())) continue;
-                if (!mem.contains(to)) continue;   // RAM/unmapped constants aren't flash pools
+                if (!mem.contains(to)) continue;   // unmapped constants aren't flash pools
+                MemoryBlock blk = mem.getBlock(to);
+                if (blk == null || !blk.isInitialized()) { ramRefs++; continue; }  // RAM variable, not a pool
                 pool.add(to.getOffset());
             }
         }
@@ -64,6 +67,7 @@ public class FixLiteralPools extends GhidraScript {
         PointerDataType ptr = new PointerDataType(currentProgram.getDataTypeManager());
         DWordDataType dword = new DWordDataType();
         int made = 0, ptrs = 0, skipped = 0, failed = 0;
+        ArrayList<String> failEx = new ArrayList<>();   // first few failures, for the log
         byte[] b = new byte[4];
         for (long off : slots) {
             Address p = toAddr(off);
@@ -87,7 +91,10 @@ public class FixLiteralPools extends GhidraScript {
                 if (isPtr) ptrs++;
                 made++;
             } catch (Exception e) {
+                // A slot that can't be cleared/typed, e.g. its 4 bytes run off the end of a
+                // block (0x8ed in the low config block). Stable across passes and harmless.
                 failed++;
+                if (failEx.size() < 3) { String m = String.valueOf(e.getMessage()); failEx.add(p + ":" + e.getClass().getSimpleName() + "[" + (m.length() > 70 ? m.substring(0, 70) : m) + "]"); }
             }
         }
 
@@ -102,7 +109,9 @@ public class FixLiteralPools extends GhidraScript {
 
         int errAfter = countErrors(bm);
         println("FixLiteralPools: poolSlots=" + slots.size() + " defined=" + made
-                + " pointers=" + ptrs + " alreadyData=" + skipped + " failed=" + failed);
+                + " pointers=" + ptrs + " alreadyData=" + skipped + " ramRefsSkipped=" + ramRefs
+                + " failed=" + failed
+                + (failEx.isEmpty() ? "" : " (failed = slot can't be typed, harmless; e.g. " + String.join(" ", failEx) + ")"));
         println("FixLiteralPools: errorBookmarks before=" + errBefore
                 + " removedStale=" + stale.size() + " after=" + errAfter);
     }
