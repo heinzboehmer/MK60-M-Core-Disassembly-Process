@@ -1,0 +1,119 @@
+--- a/mcore.sinc
++++ b/mcore.sinc
+@@ -27,7 +27,15 @@
+    op4_15 = (4, 15)
+    op2_15 = (2, 15)
+    op0_15 = (0, 15)
++   op3_15 = (3, 15)
++   psrimm = (0, 2)
+ ;
++
++# addi/subi/cmplti encode a one-based immediate (OIMM5 = field + 1, range 1..32),
++# per the M-CORE RM and binutils mcore-opc.h. The raw field alone is off by one.
++oneImm5: val is oimm5 [ val = oimm5 + 1; ] { export *[const]:4 val; }
++define pcodeop psrclr_op;
++define pcodeop psrset_op;
+ 
+ attach variables [ regY regX regZ ] [ 
+ 	r0  r1  r2  r3  r4  r5  r6  r7
+@@ -93,8 +101,8 @@
+ 	C = c1 | c2;
+ }
+ 
+-:addi regX, oimm5 is op9_15=0b0010000 & oimm5 & regX {
+-	regX = regX + oimm5;
++:addi regX, oneImm5 is op9_15=0b0010000 & oneImm5 & regX {
++	regX = regX + oneImm5;
+ }
+ 
+ :addu regX, regY is op8_15=0b00011100 & regY & regX {
+@@ -148,6 +156,10 @@
+ 	bkpt();
+ }
+ 
++# bmaski field 0 encodes 32 (all ones).
++:bmaski regX, "32" is op9_15=0b0010110 & oimm5=0 & regX {
++	regX = 0xFFFFFFFF;
++}
+ :bmaski regX, oimm5 is op9_15=0b0010110 & oimm5 & regX {
+ 	regX = (1 << oimm5) - 1;
+ }
+@@ -194,8 +206,8 @@
+ :cmplt regX, regY is op8_15=0b00001101 & regY & regX {
+ 	C = regX s< regY;
+ }
+-:cmplti regX, oimm5 is op9_15=0b0010001 & oimm5 & regX {
+-	C = regX s< oimm5;
++:cmplti regX, oneImm5 is op9_15=0b0010001 & oneImm5 & regX {
++	C = regX s< oneImm5;
+ }
+ :cmpne regX, regY is op8_15=0b00001111 & regY & regX {
+ 	C = regX != regY;
+@@ -268,7 +280,7 @@
+ }
+ 
+ 
+-:jmpi disp8_label is op4_15=0b01110000 & disp8_label {
++:jmpi disp8_label is op8_15=0b01110000 & disp8_label {
+ 	local dest:4 = *[ram]:4 disp8_label;
+ 	goto [dest];
+ }
+@@ -278,7 +290,7 @@
+     local dest:4 = regX & 0xFFFFFFFE;
+ 	call [dest];
+ }
+-:jsri disp8_label is op4_15=0b01111111 & disp8_label {
++:jsri disp8_label is op8_15=0b01111111 & disp8_label {
+ 	r15 = inst_start + 2;
+ 
+ 	local dest:4 = *[ram]:4 disp8_label;
+@@ -426,6 +438,15 @@
+ 	regX = regX >> oimm5;
+ }
+ 
++# psrclr/psrset: imm3 selects the PSR field. More specific than mfcr
++# (bits 15..3 fixed), so they take the 0x11F0-0x11FF (cr=31) encodings.
++:psrclr psrimm is op3_15=0b0001000111110 & psrimm {
++	psrclr_op(psrimm:1);
++}
++:psrset psrimm is op3_15=0b0001000111111 & psrimm {
++	psrset_op(psrimm:1);
++}
++
+ :mfcr regX, ctrlRegY is op9_15=0b0001000 & ctrlRegY & regX {
+ 	regX = ctrlRegY;
+ }
+@@ -455,6 +476,11 @@
+ 
+ :mult regX, regY is op8_15=0b00000011 & regY & regX {
+ 	regX = regX * regY;
++}
++
++# mulsh / muls.h: 16x16 -> 32 signed multiply (binutils 0x6800, MULSH).
++:mulsh regX, regY is op8_15=0b01101000 & regY & regX {
++	regX = sext(regX:2) * sext(regY:2);
+ }
+ 
+ :mvc regX is op4_15=0b000000000010 & regX {
+@@ -614,8 +640,8 @@
+ 	C = c1 | c2;
+ }
+ 
+-:subi regX, oimm5 is op9_15=0b0010010 & oimm5 & regX {
+-	regX = regX - oimm5;
++:subi regX, oneImm5 is op9_15=0b0010010 & oneImm5 & regX {
++	regX = regX - oneImm5;
+ }
+ 
+ :subu regX, regY is op8_15=0b00000101 & regY & regX {
+@@ -625,6 +651,10 @@
+ define pcodeop sync;
+ :sync is op0_15=0b0000000000000001 {
+ 	sync();
++}
++
++# idly4 (0x0007): idle-delay hint, no architectural effect we model.
++:idly4 is op0_15=0x0007 {
+ }
+ 
+ define pcodeop trap;

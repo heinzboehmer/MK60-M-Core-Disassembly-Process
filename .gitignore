@@ -1,0 +1,17 @@
+# Firmware images and anything derived from them are BMW/ATE copyrighted — never commit them.
+*.0pa
+*.bin
+*.cpu.hex
+*.clean.hex
+*.hex
+
+# Ghidra projects / work output
+projects/
+*.gpr
+*.rep/
+*.lock
+*.lock~
+
+# OS / editor cruft
+.DS_Store
+*.swp

@@ -1,0 +1,253 @@
+# MK60E5 M·CORE image recovery — the process
+
+How to turn a fresh BMW MK60E5 ABS/DSC firmware image (`.0pa` or `.cpu.hex`) into a complete,
+de-noised, labeled disassembly in Ghidra. This is the canonical description of the process; the
+Claude skill at [`.claude/skills/mcore-image-recovery/SKILL.md`](.claude/skills/mcore-image-recovery/SKILL.md)
+is a thin pointer to this file. Do the one-time toolchain setup in [`SETUP.md`](SETUP.md) first.
+
+## Why a raw import isn't enough
+
+The MK60E5 ECU runs a Motorola/Freescale **M·CORE** core (big-endian, fixed 16-bit instructions).
+Stock Ghidra has no M·CORE; `SETUP.md` builds a patched one. Even with it, M·CORE's SLEIGH models
+every branch (`bt/bf/br/bsr`) as a *computed* jump, so Ghidra's auto-analysis:
+
+- leaves branch-/jump-/pointer-reached code as raw `??` bytes,
+- falls through tail jumps into literal pools and flags them red ("bad instruction"),
+- and **mis-decodes the data/calibration section into thousands of spurious functions**
+  (bytes of a lookup curve that happen to decode as valid M·CORE).
+
+The scripts here fix all of that. The boundaries that bound the work are found **programmatically**
+(no hand-entered per-image addresses) — see Step 2.
+
+> **No firmware is included** (BMW/ATE copyright). Bring your own `.0pa` or `.cpu.hex`. `.gitignore`
+> already keeps images, `.bin`s, `.cpu.hex` and Ghidra `projects/` out of version control.
+
+## Pipeline at a glance
+
+```
+ (1) mcore_import.sh    arch-check  →  parse .0pa --reloc  →  import MCORE:BE:32  →  CreateMemBlocks
+ (2) mcore_recover.sh   find_boundary.py (auto codeHI/dataHI)
+                        →  FixLiteralPools
+                        →  [RecoverRefCode · RecoverCodeRuns · RecoverFlowCode ·
+                            FixJumpTables · FixLiteralPools · FixResidual · RetraceBodies] ×N
+                        →  DataSectionClean auto  (auto-pins dataLO = last real fn end)
+                        →  FixStorage2 → ClassifyData · ApplyDataTypes → ClearAnalysisBookmarks → CountErr
+ (3) mcore_port.sh      (optional) carry names over from an already-named reference project
+ (V) verify + quantify the memory map
+```
+
+Run everything from the repo root. Each driver prints a one-line usage if under-argued. In the
+examples `<proj_dir>` is any directory you pick for the Ghidra project and `<name>` its project name.
+
+Close the Ghidra GUI for any step that writes back (import and recover) — Ghidra takes an exclusive
+project lock; a step that prints `Unable to lock` means the GUI is still open.
+
+---
+
+## Step 1 — Parse, arch-check & import
+
+```bash
+tools/ghidra/mcore_import.sh <image.0pa | image.cpu.hex> <proj_dir> <name>
+```
+
+- **`parse_0pa.py --reloc 0x48000:0x100000:-0x8000`** — the app is stored 0x8000 above where it
+  runs (VBR=0x40000 set by crt0); this writes `<stem>.cpu.hex` at **CPU runtime addresses** next to
+  the `.0pa`. *Analyzing at .0pa addresses makes every absolute call land mid-function — don't skip
+  the reloc.* If you already have a `.cpu.hex`, pass it and this is skipped.
+- **Arch sanity check** (`find_boundary.py`, non-gating) runs *before* the slow import and warns if
+  the image doesn't look like M·CORE (see Step 2) — so you don't burn an analysis run on, say, an
+  ARM or PowerPC image fed in by mistake.
+- Import as `MCORE:BE:32:default` with `IntelHexLoader` + auto-analyze.
+- **`CreateMemBlocks.java`** adds the RAM/MMIO blocks the flash image doesn't carry (so RAM and
+  peripheral refs resolve). These ranges are the same across all MK60E5 variants (same SoC):
+  RAM `0x400000–0x423FFF`; MMIO `0xD50000–0xDE0FFF`, `0xE00000–0xE10FFF`, `0xF50000–0xFF0FFF`,
+  `0xFFF00000–0xFFF84FFF` (volatile).
+
+The program's name inside the project is the `.cpu.hex` basename (e.g. `7846816A.cpu.hex`).
+
+After this step the project is **red** (literal-pool errors) and the calibration section is full of
+spurious functions. Expected — Step 2 clears it.
+
+---
+
+## Step 2 — Recover & finish (bounds found automatically)
+
+```bash
+tools/ghidra/mcore_recover.sh <proj_dir> <name> <cpu_hex_path> [passes]
+```
+
+One headless session does the whole thing, including working out its own address bounds. `passes`
+(default 6) iterates the recovery loop to convergence.
+
+### How the boundaries are found — no hardcoded addresses
+
+The work is bounded by the code region `[codeLO, codeHI)` and the data section `[dataLO, dataHI)`,
+where `codeHI == dataLO`. The driver determines them for *any* image:
+
+- **`codeLO`** is always `0x42000` (below it, `0x40000–0x41FFF` is the VBR table + calibration
+  directory + OSEK init stubs — handled separately by `OsInit.java` if needed).
+- **`find_boundary.py`** reads the `.cpu.hex` and scans for the M·CORE frame prologue —
+  `subi r0,N` (`h & 0xFE0F == 0x2400`) immediately followed by `stm rX-r15,(r0)`
+  (`h & 0xFFF0 == 0x0070`). This pair is dense and continuous through code and essentially never
+  occurs in the calibration data above it (two constrained big-endian halfwords in a row,
+  p ≈ 1e-6 per position). It reports:
+  - **`dataHI`** = end of the contiguous image segment that contains `codeLO` (the stray low-/high-
+    memory config blocks are excluded), and
+  - **`codeHI`** = a recovery ceiling a few KB above the highest prologue (function bodies/pools run
+    above their entry). It also prints a prologue histogram and an **arch verdict** — too few
+    prologues ⇒ "this isn't M·CORE".
+- **`DataSectionClean auto`** then pins the **exact `dataLO`** Ghidra-side: the end of the last
+  function that *starts with the prologue*. Because spurious data-region functions never start with
+  the prologue, that's the true code/data boundary — and the clean step additionally **never deletes
+  or clears a prologue-started function**, so a slightly-off estimate can't damage real code.
+
+Override any bound via env (hex, no `0x`): `CODE_LO`, `CODE_HI`, `DATA_HI`; set `DATA_LO=<hex>` to
+pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verdict. You can also run
+`python3 -I tools/find_boundary.py <cpu_hex>` on its own to inspect the histogram before recovering.
+
+### The recovery loop (over `[codeLO, codeHI)`, ×`passes`)
+
+| script | what it recovers |
+|---|---|
+| `RecoverRefCode` | code reached through function pointers whose refs were never materialized |
+| `RecoverCodeRuns` | undefined runs that classify as CODE (clean decode to a terminator, not a table/padding) |
+| `RecoverFlowCode` | branch-only-reached blocks: computes the target of a `bt/bf/br/bsr` with empty `getFlows()` from the encoding, and the pool-slot pointer of an indirect `jmpi/jsri` |
+| `FixJumpTables` | reverts absolute-pointer jump tables mis-disassembled as code; re-disassembles genuine jump-table targets incl. `jmp rN` switches |
+| `FixLiteralPools` | defines the PC-relative literal pools and clears the pool-as-code red; guarded not to re-type a non-terminator fall-through target (that's truncated code, not a pool) |
+| `FixResidual` | mops up padding (`0x0000`/`0xFFFF`) and pool-edge spurious decodes |
+| `RetraceBodies` | drops spurious continuation functions and re-traces truncated function bodies |
+
+### Then the data section + finish (once)
+
+| script | what it does |
+|---|---|
+| `DataSectionClean auto <dataHI>` | pins `dataLO`, deletes spurious functions in the data section, clears mis-disassembled instructions to `undefined`, and labels every code-referenced table base |
+| `FixStorage2` | assigns return storage (`r2`) to recovered functions — kills `<UNASSIGNED> RETURN` warnings |
+| `ClassifyData` | sizes referenced-but-undefined data to `undefined1/2/4` from ld/st access width; drops VBR=0 default vector symbols |
+| `ApplyDataTypes /dev/null` | turns those into stdint typedefs (`uint8/16/32_t`) so the listing reads like C; guarded to only re-type Undefined/own-typedefs/auto byte-word-dword |
+| `ClearAnalysisBookmarks` | removes the orange breadcrumb bookmarks (**must be last**) |
+| `CountErr` | error-bookmark count (**want 0**) + function count |
+
+**Done looks like:** `CountErr` error bookmarks `= 0`; the data section shows `code=0`; function count
+in the low thousands (not 8000+, which means the data section wasn't cleaned). Re-run (idempotent) or
+raise `passes` if anything remains.
+
+---
+
+## Step 3 — Port symbols from a named reference (optional; writes back; GUI closed)
+
+Only if you have an already-named reference project (e.g. a finished DSCM90). Carries its names over
+by relocation-invariant signature:
+
+```bash
+tools/ghidra/mcore_port.sh <src_proj> <src_name> <src_program> <dst_proj> <dst_name> <dst_program> [min_instr]
+```
+
+- **`ExportSigs`** emits an FNV-1a-of-masked-halfwords signature per function (masks the lrw/jsri
+  pool slot and branch displacement — the only things that move between variants). Runs on a
+  snapshot, so the source GUI may stay open.
+- **`port_symbols.py`** ports a name only when the source name is real, its signature is unique among
+  named source functions, it occurs exactly once in the target, and both bodies have ≥ `min_instr`
+  (default 8) instructions. The rest is the **manual tail** it writes to `tail.txt`:
+  - `src-ambiguous`/`dst-ambiguous` — one signature, several candidates; disambiguate by call-site
+    context, add the pairs to `ported.tsv`, re-run `ApplyPortedNames`.
+  - unmatched targets — variant-specific or never-named-in-source; chip at them by **anchor
+    propagation** (a `FUN_` whose callers/callees are all named is usually nameable) in the GUI.
+- **`ApplyPortedNames`** applies the unambiguous names (guarded to only rename `FUN_`/`LAB_`).
+
+The image is already fully recovered after Step 2 — porting is about readability.
+
+---
+
+## Verify & quantify the memory map
+
+Read-only scanners (snapshot-safe — they work with the GUI open; `dump.sh` shows the snapshot idiom):
+
+- **`CountErr.java`** — error bookmarks (want 0) + function count. The headline health check.
+- **`ImageMap.java`** — every block + the code/defined-data/undefined landscape; confirms where
+  defined bytes end and that the code region has little residual undefined.
+- **`ScanMisdisasm.java`** — detects ≥4 consecutive code-pointer words inside instructions (a
+  mis-disassembled jump table). **Must read 0.**
+- **`DataTableInventory.java [DATA_LO DATA_HI]`** — harvests code-referenced table bases in the data
+  section: how you quantify the data map (grouped by reader subsystem).
+- **`UpperScan.java [LO]`** — classify undefined/code runs from an address up (PADDING / MONOTONIC /
+  PTRTABLE / CODELIKE / OTHER).
+
+Record, per image: the MISR-signed spans (from the in-ECU self-test range table), `find_boundary.py`'s
+bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the RAM/MMIO blocks.
+
+---
+
+## What to watch for
+
+- **"No errors" ≠ correct.** Pointer bytes decode as valid M·CORE and raise no error bookmark, so a
+  mis-disassembled table is invisible to `CountErr`. Always run `ScanMisdisasm` (want 0).
+- **Don't force-disassemble the residual `??`.** After recovery, remaining undefined in the code
+  region is literal/inline pools (data), and `??` in RAM is uninitialized (correct). The data section
+  is *supposed* to be undefined-then-labeled.
+- **Trust the auto boundary, but glance at it.** `DataSectionClean auto` prints the pinned `dataLO`;
+  it's the end of the last prologue function. If a disassembly looks truncated at the top of the code,
+  check that number and the `ImageMap` landscape.
+- **2-byte-body quirk.** A scripted headless `createFunction` can leave a 2-byte function body —
+  harmless, the decompiler follows flow. Remove+recreate backfires; leave it.
+- **`Flow Override: CALL_RETURN (COMPUTED_CALL_TERMINATOR)`** on a `jmpi`/`br` is a benign tail call.
+- **Single-site fixes:** `ForceFn.java` (clear+disassemble+functionize one address), `ForceData.java`
+  (revert to data), `FixFnEntry.java` (re-root a late-seeded entry). Avoid whole-body "repair" clears —
+  they break tail-call stub entries.
+
+## Script / tool reference
+
+### Drivers & standalone tools (`tools/`)
+
+| path | role |
+|---|---|
+| `tools/install_mcore.sh` | install/rebuild the patched M·CORE SLEIGH (see SETUP.md) |
+| `tools/parse_0pa.py` | .0pa → `.cpu.hex` (with `--reloc`) + region `.bin`s |
+| `tools/find_boundary.py` | prologue-scan: arch check + programmatic codeHI/dataHI from a `.cpu.hex` |
+| `tools/port_symbols.py` | signature 1:1 matcher; writes `ported.tsv` + `tail.txt` |
+| `tools/ghidra/mcore_import.sh` | step 1: arch-check + parse + import + `CreateMemBlocks` |
+| `tools/ghidra/mcore_recover.sh` | step 2: auto-bounds + full recover + finish chain |
+| `tools/ghidra/mcore_port.sh` | step 3: `ExportSigs` ×2 + match + `ApplyPortedNames` |
+| `tools/ghidra/dump.sh ADDR:N …` | read-only disassembly dump from a snapshot (GUI may be open) |
+
+### Ghidra scripts (`tools/ghidra/scripts/*.java`, run via `-postScript`)
+
+The drivers run these for you; listed so you can run one on its own. Bound-configurable scripts take
+`LO HI` (hex, no `0x`) and default to `0x42000`/`0xD7000` when called with no args.
+
+| script | step / role | args |
+|---|---|---|
+| `CreateMemBlocks.java` | 1 — add RAM/MMIO blocks | — |
+| `FixLiteralPools.java` | 2 — define pools, clear pool-as-code red | — |
+| `FixResidual.java` | 2 — mop up padding / pool edges | — |
+| `RecoverRefCode.java` | 2 — code reached via unmaterialized pointers | `LO HI` |
+| `RecoverCodeRuns.java` | 2 — functionize CODE-classified runs | `LO HI` |
+| `RecoverFlowCode.java` | 2 — branch-only-reached blocks | `LO HI` |
+| `FixJumpTables.java` | 2 — revert table-as-code, redo jump-table targets | `LO HI` |
+| `RetraceBodies.java` | 2 — drop spurious continuations, re-trace bodies | `LO HI` |
+| `DataSectionClean.java` | 2 — pin dataLO, delete spurious fns, label tables | `auto DATA_HI` \| `DATA_LO DATA_HI` |
+| `FixStorage2.java` | 2 — assign return storage | — |
+| `ClassifyData.java` | 2 — size referenced undefined data | — |
+| `ApplyDataTypes.java` | 2 — undefined → `uint8/16/32_t` typedefs | `<types.tsv or /dev/null>` |
+| `ClearAnalysisBookmarks.java` | 2 — drop breadcrumb bookmarks (**last**) | — |
+| `CountErr.java` | 2/V — error-bookmark + function counts | — |
+| `ExportSigs.java` | 3 — per-function porting signatures | `<out.sigs>` |
+| `ApplyPortedNames.java` | 3 — apply `addr<TAB>name` table | `<ported.tsv>` |
+| `ImageMap.java` | V — block list + code/data/undefined landscape | — |
+| `ScanMisdisasm.java` | V — detect table-as-code (want 0) | — |
+| `DataTableInventory.java` | V — harvest code-referenced table bases | `[DATA_LO DATA_HI]` |
+| `UpperScan.java` | V — classify undefined/code runs from an address up | `[LO]` |
+| `DumpAt.java` | V — dump disassembly at `ADDR:N` (via `dump.sh`) | `ADDR:N …` |
+| `ForceFn.java` | fix — clear+disassemble+functionize one address | `<addrHex=name …>` |
+| `ForceData.java` | fix — revert addresses to data | `<addrHex …>` |
+| `FixFnEntry.java` | fix — re-root a late-seeded function entry | `<addrHex=name …>` |
+| `OsInit.java` | 1/fix — disassemble OSEK init stubs below `0x42000` | `<types.tsv> <addrHex …>` |
+
+## Acknowledgment
+
+This process was developed against and cross-validated with cmg5461's
+[`mk60e5-firmware`](https://github.com/cmg5461/mk60e5-firmware): its independent M·CORE
+disassembler (`mcore_dis.py`) and reference listing, its documented symbol and memory maps
+(`*_symbols.md`), and its signature/self-test analysis (`bmy_resign.py`). The code in this repo is
+our own, but the understanding it encodes rests on that work — credit it alongside this if you
+build on it. See [CREDITS.md](CREDITS.md).
