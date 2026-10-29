@@ -29,7 +29,8 @@ points to it so Claude Code auto-discovers it.
    # 3. verify (read-only; GUI may be open) — exits 0 only when the project is clean
    tools/ghidra/mcore_verify.sh projects/MK60 MK60 /path/to/<part>.cpu.hex
 
-   # 4. (optional) carry names over from an already-named reference project
+   # 4. (optional) carry names over from an already-named reference project (by signature;
+   #    if it is the same image, every annotation is replayed by address as well)
    tools/ghidra/mcore_port.sh projects/REF REF ref.cpu.hex projects/MK60 MK60 <part>.cpu.hex
    ```
 

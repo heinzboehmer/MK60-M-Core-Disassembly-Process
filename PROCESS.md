@@ -180,6 +180,15 @@ tools/ghidra/mcore_port.sh <src_proj> <src_name> <src_program> <dst_proj> <dst_n
   - unmatched targets — variant-specific or never-named-in-source; chip at them by **anchor
     propagation** (a `FUN_` whose callers/callees are all named is usually nameable) in the GUI.
 - **`ApplyPortedNames`** applies the unambiguous names (guarded to only rename `FUN_`/`LAB_`).
+- **Same image?** If the reference is a project of the *same* image (the driver hashes both and
+  `ApplyAnnotations` applies nothing when they differ), a second pass replays *every* annotation of
+  the reference by address — `ExportAnnotations` → `ApplyAnnotations`: all function names, including
+  the short and split-at-label ones the signature match refuses (a reference function that is a
+  branch-only block inside one of our bigger bodies becomes a **label** at that address; the body
+  stays whole), user labels (cal tables, RAM/MMIO variables, low-region items — generated `tbl_`/
+  `DAT_`/`LAB_` names are skipped on export and overwritten on apply), EOL/plate comments,
+  non-analysis bookmarks and concrete scalar types (same guard as `ApplyDataTypes`). A name that
+  clashes with a different real name of ours is added as a secondary label, never overwritten.
 
 The image is already fully recovered after Step 2 — porting is about readability.
 
@@ -307,6 +316,8 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | `CountErr.java` | 2/V — error-bookmark + function counts | — |
 | `ExportSigs.java` | 3 — per-function porting signatures | `<out.sigs>` |
 | `ApplyPortedNames.java` | 3 — apply `addr<TAB>name` table | `<ported.tsv>` |
+| `ExportAnnotations.java` | 3 — dump names/labels/comments/bookmarks/types + image hash (read-only) | `<out.tsv>` |
+| `ApplyAnnotations.java` | 3 — replay them by address; refuses on image-hash mismatch | `<annotations.tsv>` |
 | `ImageMap.java` | V — block list + code/data/undefined landscape | — |
 | `ScanMisdisasm.java` | 2/V — detect table-as-code (want 0) | `[LO HI]` |
 | `DataTableInventory.java` | V — harvest code-referenced table bases | `[DATA_LO DATA_HI]` |
