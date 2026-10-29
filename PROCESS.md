@@ -29,7 +29,8 @@ The scripts here fix all of that. The boundaries that bound the work are found *
  (2) mcore_recover.sh   find_boundary.py (auto codeHI/dataHI)
                         →  FixLiteralPools
                         →  [RecoverRefCode · RecoverCodeRuns · RecoverFlowCode ·
-                            FixJumpTables · FixLiteralPools · FixResidual · RetraceBodies] ×N
+                            FixJumpTables · FixLiteralPools · FixResidual · RetraceBodies ·
+                            FunctionizeOrphans] ×N
                         →  DataSectionClean auto  (auto-pins dataLO = last real fn end → <prog>.bounds)
                         →  FixStorage2 → ClassifyData · ApplyDataTypes → ClearAnalysisBookmarks
                         →  ScanMisdisasm · CountErr
@@ -136,7 +137,8 @@ pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verd
 | `FixJumpTables` | reverts absolute-pointer jump tables mis-disassembled as code; re-disassembles genuine jump-table targets incl. `jmp rN` switches |
 | `FixLiteralPools` | defines the PC-relative literal pools and clears the pool-as-code red; guarded not to re-type a non-terminator fall-through target (that's truncated code, not a pool) |
 | `FixResidual` | mops up padding (`0x0000`/`0xFFFF`) and pool-edge spurious decodes |
-| `RetraceBodies` | drops spurious continuation functions and re-traces truncated function bodies |
+| `RetraceBodies` | drops spurious continuation functions and re-traces truncated function bodies — truncated by fall-through *or* by a branch: M·CORE branches are computed jumps, so a body traced before `RecoverFlowCode` materialized their targets stops at the first `bt/bf/br`; without this rule ~20% of the code region ends up as instructions no function owns |
+| `FunctionizeOrphans` | gives the remaining owner-less code a function: runs referenced from data (function pointers, vectors, jump tables), runs referenced from a function that tracing could not absorb, and prologue-started runs. Unreferenced speculative decodes are left alone and reported by `mcore_verify.sh` |
 
 ### Then the data section + finish (once)
 
@@ -191,8 +193,10 @@ tools/ghidra/mcore_verify.sh <proj_dir> <name> <image.cpu.hex>      # FULL=1 for
 
 One read-only run against a snapshot of the project (the GUI may stay open). It takes the bounds
 from `<prog>.bounds`, runs the scanners below, and prints a summary — error bookmarks, mis-disassembled
-table runs, code bytes in the data section (all want 0), function count, table-base count, and the
-function count in the region below `codeLO` — exiting 4 if anything isn't clean. The individual
+table runs, code bytes in the data section, orphan code runs referenced by data or by a function
+(all want 0), code bytes owned by no function at all (unreferenced speculative decodes;
+informational), function count, table-base count, and the function count in the region below
+`codeLO` — exiting 4 if anything gated isn't clean. The individual
 scanners, if you want one on its own (`dump.sh` shows the snapshot idiom):
 
 - **`CountErr.java`** — error bookmarks (want 0) + function count. The headline health check.
@@ -204,8 +208,10 @@ scanners, if you want one on its own (`dump.sh` shows the snapshot idiom):
   section: how you quantify the data map (grouped by reader subsystem).
 - **`UpperScan.java [LO]`** — classify undefined/code runs from an address up (PADDING / MONOTONIC /
   PTRTABLE / CODELIKE / OTHER).
-- **`RegionStats.java LO HI`** — functions / instructions / undefined bytes in a range; the verify
-  driver uses it for the data section (want `instrBytes=0`) and the region below `codeLO`.
+- **`RegionStats.java LO HI`** — functions / instructions / undefined bytes in a range, plus
+  `orphanInstrBytes` / `orphanRuns` / `orphanRefdRuns` (instructions no function owns); the verify
+  driver uses it for the code region (want orphan ≈ 0), the data section (want `instrBytes=0`) and
+  the region below `codeLO`.
 
 Record, per image: the MISR-signed spans (from the in-ECU self-test range table), `find_boundary.py`'s
 bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the RAM/MMIO blocks.
@@ -216,6 +222,10 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
 
 - **"No errors" ≠ correct.** Pointer bytes decode as valid M·CORE and raise no error bookmark, so a
   mis-disassembled table is invisible to `CountErr`. Always run `ScanMisdisasm` (want 0).
+- **"No errors" ≠ complete, either.** Code that is correctly disassembled but owned by no function
+  (a body truncated at a branch) raises nothing and still counts as `code=` in `ImageMap`. It shows
+  up as a thin symbol port (a named reference function with a smaller or missing twin) and as
+  `orphanInstrBytes` in `RegionStats` — the verify summary reports it and `RetraceBodies` fixes it.
 - **Don't force-disassemble the residual `??`.** After recovery, remaining undefined in the code
   region is literal/inline pools (data), and `??` in RAM is uninitialized (correct). The data section
   is *supposed* to be undefined-then-labeled.
@@ -228,6 +238,11 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
 - **Trust the auto boundary, but glance at it.** `DataSectionClean auto` prints the pinned `dataLO`;
   it's the end of the last prologue function. If a disassembly looks truncated at the top of the code,
   check that number and the `ImageMap` landscape.
+- **Shared tails stay separate functions.** When several functions jump to one block (switch-case
+  stubs converging on a common epilogue), Ghidra can't put it in all their bodies, so it stays its
+  own small `FUN_` and the stubs end in a jump to it. `RetraceBodies` keeps such an entry even when
+  it is also a fall-through target. It is also why a few reference functions still compare as
+  "smaller" in a symbol port: the port signature covers the body, not the tail.
 - **2-byte-body quirk.** A scripted headless `createFunction` can leave a 2-byte function body —
   harmless, the decompiler follows flow. Remove+recreate backfires; leave it. Its tell in the log is a
   `RetraceBodies: … truncatedFound=1 retraced=1` on *every* pass, with the same address in the
@@ -272,6 +287,7 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | `RecoverFlowCode.java` | 2 — branch-only-reached blocks | `LO HI` |
 | `FixJumpTables.java` | 2 — revert table-as-code, redo jump-table targets | `LO HI` |
 | `RetraceBodies.java` | 2 — drop spurious continuations, re-trace bodies | `LO HI` |
+| `FunctionizeOrphans.java` | 2 — functionize referenced / prologue-started orphan code | `LO HI` |
 | `DataSectionClean.java` | 2 — pin dataLO, delete spurious fns, label tables | `auto DATA_HI` \| `DATA_LO DATA_HI` |
 | `FixStorage2.java` | 2 — assign return storage | — |
 | `ClassifyData.java` | 2 — size referenced undefined data | — |
@@ -284,7 +300,7 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | `ScanMisdisasm.java` | 2/V — detect table-as-code (want 0) | `[LO HI]` |
 | `DataTableInventory.java` | V — harvest code-referenced table bases | `[DATA_LO DATA_HI]` |
 | `UpperScan.java` | V — classify undefined/code runs from an address up | `[LO]` |
-| `RegionStats.java` | V — functions/instructions/undefined bytes in a range | `LO HI [listMax]` |
+| `RegionStats.java` | V — functions/instructions/undefined/orphan-code bytes in a range | `LO HI [listMax]` |
 | `DumpAt.java` | V — dump disassembly at `ADDR:N` (via `dump.sh`) | `ADDR:N …` |
 | `ForceFn.java` | fix — clear+disassemble+functionize one address | `<addrHex=name …>` |
 | `ForceData.java` | fix — revert addresses to data | `<addrHex …>` |

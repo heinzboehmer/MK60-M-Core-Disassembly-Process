@@ -11,7 +11,8 @@
 # Set FULL=1 to also print every DataTableInventory row (one per code-referenced table base).
 #
 # Exit status: 0 = healthy (0 error bookmarks, 0 mis-disassembled tables, 0 code bytes in
-# the data section); 4 = one of those is non-zero (details printed).
+# the data section, 0 referenced code runs owned by no function); 4 = one of those is
+# non-zero (details printed).
 set -euo pipefail
 [ $# -ge 3 ] || { sed -n '2,14p' "$0"; exit 2; }
 
@@ -48,6 +49,7 @@ rc=0
     -postScript ScanMisdisasm.java "$CODE_LO" "$DATA_LO" \
     -postScript ImageMap.java \
     -postScript RegionStats.java 40000 "$CODE_LO" \
+    -postScript RegionStats.java "$CODE_LO" "$DATA_LO" \
     -postScript RegionStats.java "$DATA_LO" "$DATA_HI" \
     -postScript DataTableInventory.java "$DATA_LO" "$DATA_HI" > "$LOG" 2>&1 || rc=$?
 
@@ -68,6 +70,10 @@ MISRUNS="$(out ScanMisdisasm | sed -n 's/.*runs=\([0-9]*\).*/\1/p')"
 BASES="$(out DataTableInventory | sed -n 's/^TOTAL_BASES\t\([0-9]*\).*/\1/p')"
 DATACODE="$(out RegionStats | grep "^RegionStats 0*${DATA_LO}-" | sed -n 's/.*instrBytes=\([0-9]*\).*/\1/p')"
 LOWFNS="$(out RegionStats | grep "^RegionStats 040000-" | sed -n 's/.*functions=\([0-9]*\).*/\1/p')"
+CODELINE="$(out RegionStats | grep "^RegionStats 0*${CODE_LO}-")"
+ORPHAN="$(echo "$CODELINE" | sed -n 's/.*orphanInstrBytes=\([0-9]*\).*/\1/p')"
+ORPHANREFD="$(echo "$CODELINE" | sed -n 's/.*orphanRefdRuns=\([0-9]*\).*/\1/p')"
+CODEBYTES="$(echo "$CODELINE" | sed -n 's/.*instrBytes=\([0-9]*\).*/\1/p')"
 
 echo
 echo "=== SUMMARY ($NAME / $PROG) ==="
@@ -75,6 +81,8 @@ printf '%-42s %s   (want 0)\n'  "error bookmarks"                         "${ERR
 printf '%-42s %s   (want 0)\n'  "mis-disassembled pointer-table runs"     "${MISRUNS:-?}"
 printf '%-42s %s   (want 0)\n'  "code bytes in data section $DATA_LO..$DATA_HI" "${DATACODE:-?}"
 printf '%-42s %s   (want low thousands)\n' "functions"                    "${FNS:-?}"
+printf '%-42s %s of %s   (unreferenced speculative decodes; informational)\n' "code bytes owned by no function" "${ORPHAN:-?}" "${CODEBYTES:-?}"
+printf '%-42s %s   (want 0)\n'  "orphan code runs referenced by data/functions" "${ORPHANREFD:-?}"
 printf '%-42s %s\n'             "code-referenced table bases"             "${BASES:-?}"
 printf '%-42s %s   (auto-analysis noise below codeLO; left alone by design)\n' "functions in 40000..$CODE_LO" "${LOWFNS:-?}"
 
@@ -82,5 +90,6 @@ status=0
 [ "${ERRS:-1}" -eq 0 ] || status=4
 [ "${MISRUNS:-1}" -eq 0 ] || status=4
 [ "${DATACODE:-1}" -eq 0 ] || status=4
+[ "${ORPHANREFD:-1}" -eq 0 ] || status=4
 [ "$status" -eq 0 ] && echo ">> HEALTHY" || echo "!! NOT CLEAN — re-run mcore_recover.sh (it resumes and converges)" >&2
 exit "$status"

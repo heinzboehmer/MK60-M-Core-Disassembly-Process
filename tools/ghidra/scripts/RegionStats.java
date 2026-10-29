@@ -1,12 +1,14 @@
 // Read-only: count what the listing holds in an address range — functions (with their body
 // sizes when there are few), instructions, instruction bytes, undefined bytes. Used by
 // mcore_verify.sh for the region BELOW codeLO (VBR table + calibration directory + OSEK init
-// stubs), which the recovery pipeline leaves alone, and for the data section (want
-// instrBytes=0 there). Args: LO HI (hex, no 0x) [LIST_MAX (default 8)].
+// stubs), which the recovery pipeline leaves alone, for the data section (want instrBytes=0
+// there) and for the code region, where orphanInstrBytes = instructions no function owns
+// (truncated bodies; want ~0 after RetraceBodies). Args: LO HI (hex, no 0x) [LIST_MAX (default 8)].
 //@category MK60
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
+import ghidra.program.model.symbol.*;
 import java.util.ArrayList;
 
 public class RegionStats extends GhidraScript {
@@ -21,8 +23,28 @@ public class RegionStats extends GhidraScript {
         AddressSet set = new AddressSet(L, H);
         Listing ls = currentProgram.getListing();
 
-        int ninstr = 0; long ibytes = 0;
-        for (Instruction i : ls.getInstructions(set, true)) { ninstr++; ibytes += i.getLength(); }
+        int ninstr = 0; long ibytes = 0, orphanBytes = 0; int orphanRuns = 0, orphanRefdRuns = 0;
+        Instruction prev = null; boolean prevOrphan = false;
+        for (Instruction i : ls.getInstructions(set, true)) {
+            ninstr++; ibytes += i.getLength();
+            boolean orphan = getFunctionContaining(i.getAddress()) == null;   // code no function owns
+            if (orphan) {
+                orphanBytes += i.getLength();
+                boolean contiguous = prevOrphan && prev != null
+                        && i.getAddress().equals(prev.getAddress().add(prev.getLength()));
+                if (!contiguous) {
+                    orphanRuns++;
+                    // referenced from data or from a function's instruction (a ref from other
+                    // orphan code is just the same chain)
+                    ReferenceIterator ri = currentProgram.getReferenceManager().getReferencesTo(i.getAddress());
+                    while (ri.hasNext()) {
+                        Address from = ri.next().getFromAddress();
+                        if (getInstructionAt(from) == null || getFunctionContaining(from) != null) { orphanRefdRuns++; break; }
+                    }
+                }
+            }
+            prev = i; prevOrphan = orphan;
+        }
 
         ArrayList<String> fns = new ArrayList<>();
         for (Function f : currentProgram.getFunctionManager().getFunctions(L, true)) {
@@ -31,8 +53,9 @@ public class RegionStats extends GhidraScript {
         }
         long undef = ls.getUndefinedRanges(set, false, monitor).getNumAddresses();
 
-        println(String.format("RegionStats %06x-%06x: functions=%d instructions=%d instrBytes=%d undefBytes=%d",
-                lo, hi, fns.size(), ninstr, ibytes, undef));
+        println(String.format("RegionStats %06x-%06x: functions=%d instructions=%d instrBytes=%d undefBytes=%d"
+                + " orphanInstrBytes=%d orphanRuns=%d orphanRefdRuns=%d",
+                lo, hi, fns.size(), ninstr, ibytes, undef, orphanBytes, orphanRuns, orphanRefdRuns));
         if (!fns.isEmpty() && fns.size() <= listMax) println("  " + String.join(" ", fns));
     }
 }

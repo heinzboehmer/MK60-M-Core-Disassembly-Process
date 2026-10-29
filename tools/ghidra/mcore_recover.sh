@@ -24,7 +24,7 @@
 #
 # Chain: FixLiteralPools
 #        -> [RecoverRefCode RecoverCodeRuns RecoverFlowCode FixJumpTables
-#            FixLiteralPools FixResidual RetraceBodies] x passes   (over codeLO..codeHI)
+#            FixLiteralPools FixResidual RetraceBodies FunctionizeOrphans] x passes  (codeLO..codeHI)
 #        -> DataSectionClean {auto|DATA_LO} DATA_HI   (delete spurious fns, label tables)
 #        -> FixStorage2 -> ClassifyData + ApplyDataTypes -> ClearAnalysisBookmarks
 #        -> ScanMisdisasm -> CountErr                   (read-only health checks)
@@ -58,17 +58,19 @@ CODE_HI="${CODE_HI:-$(pick codeHI)}"
 echo ">> bounds: codeLO=$CODE_LO codeHI=$CODE_HI dataLO=$DLO dataHI=$DATA_HI  passes=$PASSES rounds<=$ROUNDS"
 
 # The per-script summary lines worth showing; the full log is kept per round.
-SHOW='Recover|FixLiteralPools:|FixJumpTables:|FixResidual:|RetraceBodies:|DataSectionClean|DATA_LO=|FixStorage2:|ClassifyData:|ApplyDataTypes:|ClearAnalysisBookmarks:|ScanMisdisasm:|CountErr:|Error bookmarks=|Unable to lock|ERROR|Exception'
+SHOW='Recover|FixLiteralPools:|FixJumpTables:|FixResidual:|RetraceBodies:|FunctionizeOrphans:|DataSectionClean|DATA_LO=|FixStorage2:|ClassifyData:|ApplyDataTypes:|ClearAnalysisBookmarks:|ScanMisdisasm:|CountErr:|Error bookmarks=|Unable to lock|ERROR|Exception'
 
 # newFunctions summed over the LAST pass of the loop (the scripts that create functions),
-# plus spurious functions RetraceBodies removed. Zero means the loop had nothing left to do.
+# plus functions RetraceBodies removed or re-traced. Zero means the loop had nothing left to do.
 last_pass_work(){  # <log>
   local total=0 v
-  for s in RecoverRefCode RecoverCodeRuns RecoverFlowCode FixJumpTables; do
+  for s in RecoverRefCode RecoverCodeRuns RecoverFlowCode FixJumpTables FunctionizeOrphans; do
     v="$(grep "$s:" "$1" | tail -1 | sed -n 's/.*newFunctions=\([0-9]*\).*/\1/p')"
     total=$((total + ${v:-0}))
   done
   v="$(grep 'RetraceBodies:' "$1" | tail -1 | sed -n 's/.*removedSpurious=\([0-9]*\).*/\1/p')"
+  total=$((total + ${v:-0}))
+  v="$(grep 'RetraceBodies:' "$1" | tail -1 | sed -n 's/.*retraced=\([0-9]*\).*/\1/p')"
   total=$((total + ${v:-0}))
   v="$(grep 'FixJumpTables:' "$1" | tail -1 | sed -n 's/.*misCodedReverted=\([0-9]*\).*/\1/p')"
   echo $((total + ${v:-0}))
@@ -87,7 +89,8 @@ for round in $(seq 1 "$ROUNDS"); do
             -postScript FixJumpTables.java "$CODE_LO" "$CODE_HI"
             -postScript FixLiteralPools.java
             -postScript FixResidual.java
-            -postScript RetraceBodies.java "$CODE_LO" "$CODE_HI" )
+            -postScript RetraceBodies.java "$CODE_LO" "$CODE_HI"
+            -postScript FunctionizeOrphans.java "$CODE_LO" "$CODE_HI" )
   done
   ARGS+=( -postScript DataSectionClean.java "$DLO" "$DATA_HI"
           -postScript FixStorage2.java
