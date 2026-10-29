@@ -13,6 +13,13 @@
 //     literal-pool slot (its read/data reference target).
 // A seed is disassembled only if it is raw undefined bytes or an `undefined`-typed item
 // (blocker) in the code range -- never real pointer/array/struct/int/cal data.
+//
+// It also RECORDS the resolved target as a flow reference on the instruction (the branch's
+// own flow type: CONDITIONAL_COMPUTED_JUMP / COMPUTED_JUMP / COMPUTED_CALL). Ghidra only
+// materializes computed-flow references during auto-analysis, so code disassembled by these
+// scripts had branches with no reference at all: function-body tracing, RetraceBodies and the
+// decompiler all stopped at the first bt/bf of such a function, leaving the rest of it as
+// instructions owned by no function. With the reference in place getFlows() resolves.
 // Follow with FixLiteralPools/FixResidual to tidy pools the new code pulls in.
 //@category MK60
 import ghidra.app.script.GhidraScript;
@@ -25,6 +32,8 @@ import ghidra.program.model.listing.*;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.RefType;
+import ghidra.program.model.symbol.SourceType;
+import ghidra.program.model.listing.CodeUnit;
 import java.util.*;
 
 public class RecoverFlowCode extends GhidraScript {
@@ -41,7 +50,7 @@ public class RecoverFlowCode extends GhidraScript {
         pd = new PseudoDisassembler(currentProgram);
         findTableRanges();          // runs of >=4 consecutive code-pointer words = jump tables; never code
         int errBefore = errorCount();
-        int totalDisasm = 0, totalFns = 0;
+        int totalDisasm = 0, totalFns = 0, refsAdded = 0;
 
         for (int pass = 0; pass < 12; pass++) {
             LinkedHashSet<Long> seeds = new LinkedHashSet<>();
@@ -69,7 +78,17 @@ public class RecoverFlowCode extends GhidraScript {
                     t = indirectTarget(ins);
                     call = m.equals("jsri");
                 }
-                if (t != null && seedable(t)) { seeds.add(t.getOffset()); if (call) callTargets.add(t.getOffset()); }
+                if (t == null) continue;
+                // Record the flow so Ghidra (body tracing, decompiler, xrefs) can follow it.
+                if (mem.contains(t) && !inTable(t.getOffset())) {
+                    boolean indirect = m.equals("jmpi") || m.equals("jsri");
+                    try {
+                        currentProgram.getReferenceManager().addMemoryReference(ins.getAddress(), t,
+                                ins.getFlowType(), SourceType.ANALYSIS, indirect ? CodeUnit.MNEMONIC : 0);
+                        refsAdded++;
+                    } catch (Exception e) {}
+                }
+                if (seedable(t)) { seeds.add(t.getOffset()); if (call) callTargets.add(t.getOffset()); }
             }
             if (seeds.isEmpty()) break;
             int made = 0;
@@ -93,7 +112,7 @@ public class RecoverFlowCode extends GhidraScript {
 
         int errAfter = errorCount();
         println("RecoverFlowCode: seedsDisassembled=" + totalDisasm + " newFunctions=" + totalFns
-                + " errorBookmarks " + errBefore + " -> " + errAfter);
+                + " flowRefsAdded=" + refsAdded + " errorBookmarks " + errBefore + " -> " + errAfter);
     }
 
     // PC-relative branch target from the 16-bit encoding: disp = bits[0..10] signed.

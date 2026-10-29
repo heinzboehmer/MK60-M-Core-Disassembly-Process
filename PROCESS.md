@@ -131,14 +131,14 @@ pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verd
 
 | script | what it recovers |
 |---|---|
-| `RecoverRefCode` | code reached through function pointers whose refs were never materialized |
+| `RecoverRefCode` | code reached through function pointers whose refs were never materialized; also seeds the VBR exception-vector table (`0x40000`, 128 entries — bit 0 of an entry is the alternate-register-file flag, not an address bit) |
 | `RecoverCodeRuns` | undefined runs that classify as CODE (clean decode to a terminator, not a table/padding) |
-| `RecoverFlowCode` | branch-only-reached blocks: computes the target of a `bt/bf/br/bsr` with empty `getFlows()` from the encoding, and the pool-slot pointer of an indirect `jmpi/jsri` |
+| `RecoverFlowCode` | branch-only-reached blocks: computes the target of a `bt/bf/br/bsr` with empty `getFlows()` from the encoding, and the pool-slot pointer of an indirect `jmpi/jsri` — and **records it as a flow reference**. Ghidra only materializes computed-flow references during auto-analysis, so every branch in script-disassembled code had none: body tracing, `RetraceBodies` and the decompiler all stopped at the first `bt/bf` of such a function. The reference is what lets the rest of the loop (and the decompiler) follow it |
 | `FixJumpTables` | reverts absolute-pointer jump tables mis-disassembled as code; re-disassembles genuine jump-table targets incl. `jmp rN` switches |
 | `FixLiteralPools` | defines the PC-relative literal pools and clears the pool-as-code red; guarded not to re-type a non-terminator fall-through target (that's truncated code, not a pool) |
 | `FixResidual` | mops up padding (`0x0000`/`0xFFFF`) and pool-edge spurious decodes |
 | `RetraceBodies` | drops spurious continuation functions and re-traces truncated function bodies — truncated by fall-through *or* by a branch: M·CORE branches are computed jumps, so a body traced before `RecoverFlowCode` materialized their targets stops at the first `bt/bf/br`; without this rule ~20% of the code region ends up as instructions no function owns |
-| `FunctionizeOrphans` | gives the remaining owner-less code a function: runs referenced from data (function pointers, vectors, jump tables), runs referenced from a function that tracing could not absorb, and prologue-started runs. Unreferenced speculative decodes are left alone and reported by `mcore_verify.sh` |
+| `FunctionizeOrphans` | gives the remaining owner-less code a function: runs referenced from data (function pointers, vectors, jump tables), runs referenced from a function that tracing could not absorb, prologue-started runs, and *displaced entries* — a callback whose address is taken and passed as a parameter gets its first bytes auto-typed `uint8/16/32_t` by `ClassifyData`, so the run starts a few bytes after the real entry; the item is cleared and the function created at its address when the code decodes cleanly from there. Unreferenced speculative decodes are left alone and reported by `mcore_verify.sh` |
 
 ### Then the data section + finish (once)
 
@@ -226,6 +226,15 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
   (a body truncated at a branch) raises nothing and still counts as `code=` in `ImageMap`. It shows
   up as a thin symbol port (a named reference function with a smaller or missing twin) and as
   `orphanInstrBytes` in `RegionStats` — the verify summary reports it and `RetraceBodies` fixes it.
+- **What is left as "code bytes owned by no function" after a clean run is small and worth a
+  manual glance.** `mcore_verify.sh` prints the number; on a converged image it should be a few
+  hundred bytes at most, all unreferenced. What it has turned out to be: junk decodes at the edge of
+  a literal pool (a run that starts with `bkpt`/`rte`/`dect` and is a dozen bytes), a lone `br` that
+  no body claims, and occasionally a genuinely unreferenced routine. To inspect, run `RegionStats`
+  with a small range or `UpperScan`, and fix a real one with `ForceFn.java` (functionize) or
+  `ForceData.java` (revert). Anything larger, or any run that *is* referenced, means a recovery rule
+  is missing — see the three cases above (branch references, vector table, displaced entries), which
+  is how this list was built.
 - **Don't force-disassemble the residual `??`.** After recovery, remaining undefined in the code
   region is literal/inline pools (data), and `??` in RAM is uninitialized (correct). The data section
   is *supposed* to be undefined-then-labeled.
@@ -243,10 +252,12 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
   own small `FUN_` and the stubs end in a jump to it. `RetraceBodies` keeps such an entry even when
   it is also a fall-through target. It is also why a few reference functions still compare as
   "smaller" in a symbol port: the port signature covers the body, not the tail.
-- **2-byte-body quirk.** A scripted headless `createFunction` can leave a 2-byte function body —
-  harmless, the decompiler follows flow. Remove+recreate backfires; leave it. Its tell in the log is a
-  `RetraceBodies: … truncatedFound=1 retraced=1` on *every* pass, with the same address in the
-  `retraced entries:` line that follows.
+- **2-byte-body "quirk".** A scripted headless `createFunction` used to leave 2-byte function
+  bodies that remove+recreate could not grow. The cause was the missing computed-flow references
+  (above): an entry whose first instruction is a `br`/`bt` with no reference has nowhere to trace to.
+  Now that `RecoverFlowCode` records them, such bodies retrace like any other; a retrace that comes
+  back no larger is counted as `unchanged` in the `RetraceBodies` line and does not keep the
+  convergence loop alive.
 - **`FixLiteralPools: … ramRefsSkipped=N failed=M`.** Absolute `ld`/`st` references into RAM look
   like pool slots but are variables in an uninitialized block, so they are skipped and counted (large
   N is normal). `failed` is the rare slot that can't be typed at all (its 4 bytes run off the end of a

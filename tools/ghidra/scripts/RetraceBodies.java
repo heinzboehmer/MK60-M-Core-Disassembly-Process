@@ -12,8 +12,8 @@
 //     outside the body that is not another function's entry or body.
 // Without the second rule ~20% of the code region ends up as instructions owned by no
 // function (bodies stop at the first branch). Protects named (cmg5461) functions from removal
-// in step 1; skips 2-byte bodies in step 2 (the headless createFunction quirk — retracing
-// those backfires, see PROCESS.md).
+// in step 1. A retrace whose body comes back no larger (shared tail; 2-byte-body quirk) is
+// counted as `unchanged`, not as progress, so the driver's convergence check is not fooled.
 //@category MK60
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.*;
@@ -48,13 +48,12 @@ public class RetraceBodies extends GhidraScript {
         for (Address e : spurious) { Function f = getFunctionAt(e); if (f != null) { removeFunction(f); removed++; } }
 
         // Step 2: collect truncated functions
-        ArrayList<Object[]> trunc = new ArrayList<>();   // {entryOffset, name}
+        ArrayList<Object[]> trunc = new ArrayList<>();   // {entryOffset, name, bodySize}
         int byFallThrough = 0, byJump = 0;
         for (Function f : fm.getFunctions(true)) {
             Address e = f.getEntryPoint();
             if (e.getOffset() < LO || e.getOffset() >= HI) continue;
             AddressSetView body = f.getBody();
-            if (body.getNumAddresses() <= 2) continue;        // 2-byte-body quirk: leave it
             boolean truncated = false;
             // (a) last instruction falls through to code outside the body
             Instruction last = getInstructionContaining(body.getMaxAddress());
@@ -77,28 +76,34 @@ public class RetraceBodies extends GhidraScript {
                     }
                 }
             }
-            if (truncated) trunc.add(new Object[]{e.getOffset(), f.getName()});
+            if (truncated) trunc.add(new Object[]{e.getOffset(), f.getName(), body.getNumAddresses()});
         }
-        int retraced = 0, failed = 0;
+        int retraced = 0, failed = 0, unchanged = 0;
+        ArrayList<Object[]> grew = new ArrayList<>();
         for (Object[] t : trunc) {
             Address e = toAddr((Long) t[0]);
             String name = (String) t[1];
+            long before = (Long) t[2];
             Function f = getFunctionAt(e);
             if (f != null) removeFunction(f);
             Function nf = null;
             try { nf = createFunction(e, null); } catch (Exception ex) {}
             if (nf == null) { failed++; try { createFunction(e, name); } catch (Exception ex) {} continue; }
             if (!name.startsWith("FUN_")) try { nf.setName(name, SourceType.USER_DEFINED); } catch (Exception ex) {}
-            retraced++;
+            // Only a body that actually grew is progress; a body that comes back the same size
+            // (shared tail Ghidra can't merge, or the 2-byte-body quirk) must not keep the
+            // driver's convergence loop alive.
+            if (nf.getBody().getNumAddresses() > before) { retraced++; grew.add(t); } else unchanged++;
         }
         println("RetraceBodies: removedSpurious=" + removed + " truncatedFound=" + trunc.size()
-                + " (fallThrough=" + byFallThrough + " jump=" + byJump + ") retraced=" + retraced + " failed=" + failed);
+                + " (fallThrough=" + byFallThrough + " jump=" + byJump + ") retraced=" + retraced
+                + " unchanged=" + unchanged + " failed=" + failed);
         // Name the few that were retraced so a function that re-appears here on EVERY pass
         // can be identified: that is the headless 2-byte-body quirk (createFunction leaves a
         // 2-byte body whose fall-through is always "outside"), harmless — see PROCESS.md.
-        if (!trunc.isEmpty() && trunc.size() <= 8) {
+        if (!grew.isEmpty() && grew.size() <= 8) {
             StringBuilder sb = new StringBuilder("RetraceBodies: retraced entries:");
-            for (Object[] t : trunc) sb.append(' ').append(Long.toHexString((Long) t[0])).append('=').append((String) t[1]);
+            for (Object[] t : grew) sb.append(' ').append(Long.toHexString((Long) t[0])).append('=').append((String) t[1]);
             println(sb.toString());
         }
     }

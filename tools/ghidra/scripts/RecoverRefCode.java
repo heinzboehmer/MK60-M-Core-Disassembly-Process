@@ -4,6 +4,12 @@
 // AND begins with a function prologue (subi r0,N; stm rX-r15,(r0)) or is a clean leaf that
 // reaches a return. Excludes anything read/written as data (a variable) and anything inside
 // a pointer-table region. Disassembles + functionizes; RecoverFlowCode then cascades.
+// Also seeds the VBR exception-vector table (VBR=0x40000 set by crt0; 128 x 4-byte entries).
+// Bit 0 of an entry is the M-CORE alternate-register-file flag, NOT part of the address, so
+// entries are odd: mask it, record a DATA reference slot -> handler, clear whatever auto-sized
+// data ClassifyData put on the handler's first bytes (the odd address made it a uint8_t that
+// displaced the decode by two), and functionize. ISR entries have no prologue and are not
+// leaves, so the generic data-pointer rule below misses them.
 //@category MK60
 import ghidra.app.script.GhidraScript;
 import ghidra.app.util.PseudoDisassembler;
@@ -11,6 +17,7 @@ import ghidra.app.util.PseudoInstruction;
 import ghidra.program.model.address.*;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.symbol.*;
+import ghidra.program.model.listing.*;
 import java.util.*;
 
 public class RecoverRefCode extends GhidraScript {
@@ -28,7 +35,27 @@ public class RecoverRefCode extends GhidraScript {
         AddressIterator dests = rm.getReferenceDestinationIterator(new AddressSet(toAddr(LO), toAddr(HI - 1)), true);
 
         ArrayList<Long> seeds = new ArrayList<>();
-        int flowSeeds = 0, ptrSeeds = 0;
+        int flowSeeds = 0, ptrSeeds = 0, vecSeeds = 0, fns0 = 0;
+
+        // VBR vector table: 0x40000 + 4*i, i < 128; entry = handler | AF-flag(bit 0)
+        for (int i = 0; i < 128; i++) {
+            Address slot = toAddr(0x40000L + 4L * i);
+            long v; try { v = mem.getInt(slot) & 0xFFFFFFFFL; } catch (Exception e) { continue; }
+            if (v == 0 || v == 0xFFFFFFFFL) continue;
+            long tv = v & ~1L;
+            if (tv < 0x40000L || tv >= HI) continue;
+            Address t = toAddr(tv);
+            try { rm.addMemoryReference(slot, t, RefType.DATA, SourceType.ANALYSIS, 0); } catch (Exception e) {}
+            if (getFunctionAt(t) != null) continue;
+            if (getInstructionAt(t) == null && getInstructionContaining(t) == null) {
+                try { clearListing(t, t.add(3)); } catch (Exception e) {}   // auto-sized uint8/16 on the entry
+                if (!cleanCode(t, 4)) continue;
+                seeds.add(tv); vecSeeds++;
+            } else if (getInstructionAt(t) != null && getFunctionContaining(t) == null) {
+                try { if (createFunction(t, null) != null) { vecSeeds++; fns0++; } } catch (Exception e) {}
+            }
+        }
+
         while (dests.hasNext()) {
             Address a = dests.next();
             long o = a.getOffset();
@@ -54,7 +81,7 @@ public class RecoverRefCode extends GhidraScript {
             else if (hasData && (isPrologue(a) || leafReturns(a))) { seeds.add(o); ptrSeeds++; }
         }
 
-        int made = 0, fns = 0;
+        int made = 0, fns = fns0;
         for (long o : seeds) {
             Address a = toAddr(o);
             if (getInstructionAt(a) != null) continue;
@@ -62,7 +89,7 @@ public class RecoverRefCode extends GhidraScript {
             try { disassemble(a); } catch (Exception e) {}
             if (getInstructionAt(a) != null) { made++; try { if (createFunction(a, null) != null) fns++; } catch (Exception e) {} }
         }
-        println("RecoverRefCode: flowSeeds=" + flowSeeds + " ptrSeeds=" + ptrSeeds
+        println("RecoverRefCode: flowSeeds=" + flowSeeds + " ptrSeeds=" + ptrSeeds + " vectorSeeds=" + vecSeeds
                 + " disassembled=" + made + " newFunctions=" + fns);
     }
 
