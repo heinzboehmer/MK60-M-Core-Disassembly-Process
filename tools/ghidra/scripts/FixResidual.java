@@ -29,9 +29,16 @@ public class FixResidual extends GhidraScript {
 
         int padding = 0, pointers = 0, keptCode = 0, failed = 0;
         byte[] b = new byte[4];
+        Listing listing = currentProgram.getListing();
         for (Bookmark bk : errs) {
             Address a = bk.getAddress();
             try {
+                // Inside a typed table (Array/Structure): the bookmark is stale, the bytes are
+                // table data — never clear them (that destroys the whole item).
+                Data dc = listing.getDataContaining(a);
+                if (dc != null && (dc.getDataType() instanceof Array || dc.getDataType() instanceof Structure)) {
+                    bm.removeBookmark(bk); continue;
+                }
                 mem.getBytes(a, b);
                 int b0 = b[0] & 0xFF, b1 = b[1] & 0xFF;
                 long v = ((long)b0 << 24) | ((b[1] & 0xFF) << 16) | ((b[2] & 0xFF) << 8) | (b[3] & 0xFF);

@@ -60,6 +60,8 @@ public class ApplyDataTypes extends GhidraScript {
         int skippedTyped = 0;
         for (Address a : cand) {
             if (!mem.contains(a) || listing.getInstructionContaining(a) != null) continue;
+            Data dc = listing.getDataContaining(a);
+            if (dc != null && dc.isDefined() && !dc.getAddress().equals(a)) { skippedTyped++; continue; }   // inside a composite/array
             // only (re)type UNDEFINED data or our own stdint typedefs -- never clobber
             // a pointer / array / struct / string / other meaningful type.
             Data cur = listing.getDefinedDataAt(a);

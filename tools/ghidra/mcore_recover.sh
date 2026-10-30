@@ -28,6 +28,7 @@
 #        -> DataSectionClean {auto|DATA_LO} DATA_HI   (delete spurious fns, label tables)
 #        -> FixStorage2 -> ClassifyData + ApplyDataTypes -> ClearAnalysisBookmarks
 #        -> ScanMisdisasm -> CountErr                   (read-only health checks)
+#        ] until converged, then once: AnalyzeSignatures (params/return/locals; SIGS=0 skips)
 set -euo pipefail
 [ $# -ge 3 ] || { sed -n '2,31p' "$0"; exit 2; }
 
@@ -81,13 +82,13 @@ for round in $(seq 1 "$ROUNDS"); do
   LOG="$PROJ_DIR/$PROG.recover.round$round.log"
   echo ">> round $round / $ROUNDS  (codeHI=$CODE_HI)  log: $LOG"
 
-  ARGS=( -postScript FixLiteralPools.java )
+  ARGS=( -postScript FixLiteralPools.java "$CODE_LO" "$CODE_HI" )
   for _ in $(seq 1 "$PASSES"); do
     ARGS+=( -postScript RecoverRefCode.java "$CODE_LO" "$CODE_HI"
             -postScript RecoverCodeRuns.java "$CODE_LO" "$CODE_HI"
             -postScript RecoverFlowCode.java "$CODE_LO" "$CODE_HI"
             -postScript FixJumpTables.java "$CODE_LO" "$CODE_HI"
-            -postScript FixLiteralPools.java
+            -postScript FixLiteralPools.java "$CODE_LO" "$CODE_HI"
             -postScript FixResidual.java
             -postScript RetraceBodies.java "$CODE_LO" "$CODE_HI"
             -postScript FunctionizeOrphans.java "$CODE_LO" "$CODE_HI" )
@@ -137,5 +138,25 @@ status=0
 [ "$converged" -eq 1 ] || { echo "!! NOT converged after $ROUNDS rounds — re-run (it resumes) or raise ROUNDS/passes." >&2; status=4; }
 [ "${ERRS:-1}" -eq 0 ] || { echo "!! error bookmarks remain: $ERRS" >&2; status=4; }
 [ "${MISRUNS:-1}" -eq 0 ] || { echo "!! ScanMisdisasm found $MISRUNS mis-disassembled pointer-table run(s) — see the log." >&2; status=4; }
+
+# --- signatures: parameters / return / stack locals on the recovered function set ---
+# One more session, once the function set is final. The recovery sessions run -noanalysis,
+# so without this every function is `undefined FUN_x(void)` and decompiled calls have no
+# arguments. Ghidra's own stack + decompiler-parameter-ID commands; idempotent. SIGS=0 skips.
+if [ "$status" -eq 0 ] && [ "${SIGS:-1}" != 0 ]; then
+  LOG="$PROJ_DIR/$PROG.signatures.log"
+  echo ">> signatures: stack frames + decompiler parameter ID over 40000..$DATA_HI  (log: $LOG)"
+  rc=0
+  "$HEADLESS" "$PROJ_DIR" "$NAME" \
+      -process "$PROG" -noanalysis \
+      -scriptPath "$ROOT/tools/ghidra/scripts" \
+      -postScript AnalyzeSignatures.java 40000 "$DATA_HI" "${SIG_TIMEOUT:-60}" > "$LOG" 2>&1 || rc=$?
+  grep -E "AnalyzeSignatures:|Unable to lock|ERROR|Exception" "$LOG" | grep -vE '^INFO  (REPORT|SCRIPT): ' \
+    | sed -E 's/^INFO  [A-Za-z0-9]+\.java> //; s/ \(GhidraScript\) *$//' || true
+  if [ "$rc" -ne 0 ] || ! grep -q 'AnalyzeSignatures:' "$LOG"; then
+    echo "!! signature pass failed (headless exit $rc) — see $LOG" >&2; exit 1
+  fi
+fi
+
 [ "$status" -eq 0 ] && echo ">> DONE: converged, 0 error bookmarks, 0 mis-disassembled tables, $FNS functions."
 exit "$status"

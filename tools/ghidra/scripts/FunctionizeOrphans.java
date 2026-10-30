@@ -30,6 +30,22 @@ public class FunctionizeOrphans extends GhidraScript {
     @Override
     public void run() throws Exception {
         String[] _a = getScriptArgs(); if (_a.length >= 2) { LO = Long.parseLong(_a[0],16); HI = Long.parseLong(_a[1],16); }
+        // A run of switch-case stubs (movi; br — 4 bytes each, every one a jump-table target) is
+        // one orphan run whose first stub becomes a function and whose next stub is then the new
+        // run start; rescanning until nothing new is created functionizes the whole table at once.
+        int[] tot = new int[8];
+        for (int iter = 0; iter < 64; iter++) {
+            int[] r = pass();
+            for (int i = 0; i < 7; i++) tot[i] += r[i];
+            tot[7] = r[7];
+            if (r[5] == 0) break;
+        }
+        println("FunctionizeOrphans: orphanRuns=" + tot[0] + " dataReferenced=" + tot[1] + " fnReferenced=" + tot[2]
+                + " prologueStarted=" + tot[3] + " displacedEntry=" + tot[4] + " newFunctions=" + tot[5] + " failed=" + tot[6] + " leftUnreferenced=" + tot[7]);
+    }
+
+    // one scan; returns {orphanRuns, dataRefd, fnRefd, prologue, displaced, made, failed, left}
+    private int[] pass() throws Exception {
         Listing ls = currentProgram.getListing();
         ReferenceManager rm = currentProgram.getReferenceManager();
         AddressSet set = new AddressSet(toAddr(LO), toAddr(HI - 1));
@@ -78,8 +94,7 @@ public class FunctionizeOrphans extends GhidraScript {
             if (fromData) dataRefd++; else if (fromFn) fnRefd++; else prologue++;
             try { if (createFunction(a, null) != null) made++; else failed++; } catch (Exception e) { failed++; }
         }
-        println("FunctionizeOrphans: orphanRuns=" + starts.size() + " dataReferenced=" + dataRefd + " fnReferenced=" + fnRefd
-                + " prologueStarted=" + prologue + " displacedEntry=" + displaced + " newFunctions=" + made + " failed=" + failed + " leftUnreferenced=" + left);
+        return new int[]{starts.size(), dataRefd, fnRefd, prologue, displaced, made, failed, left};
     }
 
     private PseudoDisassembler pd;

@@ -111,7 +111,8 @@ corpus; this repo doesn't vendor it, and it never gates the pipeline.
 | `JAVA_HOME` | `.../temurin-25.jdk/Contents/Home` | different JDK |
 
 `mcore_recover.sh` also accepts bound overrides via env (`CODE_LO`/`CODE_HI`/`DATA_HI`/`DATA_LO`,
-hex, no `0x`), `ROUNDS` (max recover-and-finish repetitions, default 4) and `FORCE=1` — see
+hex, no `0x`), `ROUNDS` (max recover-and-finish repetitions, default 4), `SIGS=0` (skip the final
+signature pass) / `SIG_TIMEOUT` (seconds per function, default 60) and `FORCE=1` — see
 [PROCESS.md](PROCESS.md) Step 2. You normally don't need them.
 
 ## Troubleshooting

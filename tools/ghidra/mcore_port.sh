@@ -79,10 +79,26 @@ if [ "$rc" -ne 0 ] || [ ! -s "$WORK/annotations.tsv" ]; then
   echo "!! ExportAnnotations failed (headless exit $rc) — see $EXP_LOG" >&2; exit 1
 fi
 echo ">> apply annotations to target (same image only; writes back)"
+DST_BOUNDS="$DP/$DPROG.bounds"
+DST_DATA_LO="$( [ -f "$DST_BOUNDS" ] && sed -n 's/^DATA_LO=\([0-9a-fA-F]*\).*/\1/p' "$DST_BOUNDS" || true )"
+DST_DATA_HI="$( [ -f "$DST_BOUNDS" ] && sed -n 's/^DATA_HI=\([0-9a-fA-F]*\).*/\1/p' "$DST_BOUNDS" || true )"
+[ -n "$DST_DATA_LO" ] || echo ">> note: no $DST_BOUNDS — reference entries in the data section cannot be excluded"
 ANN_LOG="$WORK/apply_annotations.log"; rc=0
 "$HEADLESS" "$DP" "$DN" -process "$DPROG" -noanalysis -scriptPath "$SCR" \
-    -postScript ApplyAnnotations.java "$WORK/annotations.tsv" > "$ANN_LOG" 2>&1 || rc=$?
+    -postScript ApplyAnnotations.java "$WORK/annotations.tsv" ${DST_DATA_LO:+"$DST_DATA_LO"} > "$ANN_LOG" 2>&1 || rc=$?
 grep -E "ApplyAnnotations:|Unable to lock|ERROR" "$ANN_LOG" | sed -E 's/^INFO  [A-Za-z0-9]+\.java> //; s/ \(GhidraScript\) *$//' || true
 if [ "$rc" -ne 0 ] || ! grep -q 'ApplyAnnotations:' "$ANN_LOG"; then
   echo "!! ApplyAnnotations failed (headless exit $rc) — see $ANN_LOG" >&2; exit 1
+fi
+
+# Functions the replay created have no signature yet: re-run the (idempotent) signature pass.
+if [ "${SIGS:-1}" != 0 ]; then
+  echo ">> signatures on the target (params / return / locals for new entries)"
+  SIG_LOG="$WORK/signatures.log"; rc=0
+  "$HEADLESS" "$DP" "$DN" -process "$DPROG" -noanalysis -scriptPath "$SCR" \
+      -postScript AnalyzeSignatures.java 40000 "${DST_DATA_HI:-f6a24}" "${SIG_TIMEOUT:-60}" > "$SIG_LOG" 2>&1 || rc=$?
+  grep -E "AnalyzeSignatures:|Unable to lock|ERROR" "$SIG_LOG" | sed -E 's/^INFO  [A-Za-z0-9]+\.java> //; s/ \(GhidraScript\) *$//' || true
+  if [ "$rc" -ne 0 ] || ! grep -q 'AnalyzeSignatures:' "$SIG_LOG"; then
+    echo "!! signature pass failed (headless exit $rc) — see $SIG_LOG" >&2; exit 1
+  fi
 fi

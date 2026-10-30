@@ -14,8 +14,15 @@
 // never touched. Then it drops stale "Bad Instruction" error bookmarks whose
 // address is no longer an instruction. Idempotent; re-runnable.
 //
+// Bounded: only slots inside [LO, HI) — the code region — are typed. Literal pools live
+// between functions; a calibration table above dataLO that an instruction reads is NOT a
+// pool slot, and typing its first 4 bytes as a pointer whenever they happen to look like a
+// flash address is a mistake ClassifyData/ApplyDataTypes then (rightly) refuse to undo.
+// Table bases in the data section are DataSectionClean's (labels) and ClassifyData's
+// (width) business. With no args the old unbounded behaviour is kept.
+//
 // Usage (headless, writes back -- close the GUI first for the project lock):
-//   -process 7846816A.cpu.hex -noanalysis -postScript FixLiteralPools.java
+//   -process 7846816A.cpu.hex -noanalysis -postScript FixLiteralPools.java [LO HI]
 //@category MK60
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
@@ -27,8 +34,11 @@ import ghidra.program.model.symbol.RefType;
 import java.util.*;
 
 public class FixLiteralPools extends GhidraScript {
+    private long LO = Long.MIN_VALUE, HI = Long.MAX_VALUE;
+
     @Override
     public void run() throws Exception {
+        String[] _bnd = getScriptArgs(); if (_bnd.length >= 2) { LO = Long.parseLong(_bnd[0], 16); HI = Long.parseLong(_bnd[1], 16); }
         Listing listing = currentProgram.getListing();
         Memory mem = currentProgram.getMemory();
         BookmarkManager bm = currentProgram.getBookmarkManager();
@@ -43,7 +53,7 @@ public class FixLiteralPools extends GhidraScript {
 
         // Pool slots: in-memory read/data targets of instructions (lrw/jsri/jmpi ...).
         HashSet<Long> pool = new HashSet<>();
-        int ramRefs = 0;
+        int ramRefs = 0, outOfRange = 0;
         InstructionIterator iit = listing.getInstructions(true);
         while (iit.hasNext()) {
             Instruction ins = iit.next();
@@ -54,6 +64,7 @@ public class FixLiteralPools extends GhidraScript {
                 if (rt.isFlow()) { codeTargets.add(to.getOffset()); continue; }
                 if (rt.isWrite() || !(rt.isRead() || rt.isData())) continue;
                 if (!mem.contains(to)) continue;   // unmapped constants aren't flash pools
+                if (to.getOffset() < LO || to.getOffset() >= HI) { outOfRange++; continue; }   // data-section table, not a pool
                 MemoryBlock blk = mem.getBlock(to);
                 if (blk == null || !blk.isInitialized()) { ramRefs++; continue; }  // RAM variable, not a pool
                 pool.add(to.getOffset());
@@ -74,6 +85,11 @@ public class FixLiteralPools extends GhidraScript {
             try {
                 Data d = getDataAt(p);
                 if (d != null && d.isDefined() && d.getLength() == 4) { skipped++; continue; }
+                // Inside (or at the base of) a typed table — an Array/Structure a curator or the
+                // annotation replay applied — this is table data, not a pool slot: clearing the
+                // 4 bytes would destroy the whole item and leave fragments for RecoverCodeRuns.
+                Data dc = listing.getDataContaining(p);
+                if (dc != null && (dc.getDataType() instanceof Array || dc.getDataType() instanceof Structure)) { skipped++; continue; }
                 // Arbitration: a read-target reached by fall-through from a non-terminator is
                 // truncated-function CODE (see FixTruncated), not a literal pool -- leave it.
                 // Real pools sit after a terminator (jmpi/br/rts) and have no fall-through in.
@@ -109,7 +125,7 @@ public class FixLiteralPools extends GhidraScript {
 
         int errAfter = countErrors(bm);
         println("FixLiteralPools: poolSlots=" + slots.size() + " defined=" + made
-                + " pointers=" + ptrs + " alreadyData=" + skipped + " ramRefsSkipped=" + ramRefs
+                + " pointers=" + ptrs + " alreadyData=" + skipped + " ramRefsSkipped=" + ramRefs + " outsideCodeRegion=" + outOfRange
                 + " failed=" + failed
                 + (failEx.isEmpty() ? "" : " (failed = slot can't be typed, harmless; e.g. " + String.join(" ", failEx) + ")"));
         println("FixLiteralPools: errorBookmarks before=" + errBefore

@@ -54,6 +54,8 @@ public class ClassifyData extends GhidraScript {
         for (Address a : cand) {
             if (!mem.contains(a)) continue;
             if (listing.getDefinedDataAt(a) != null) continue;          // already data
+            Data dc = listing.getDataContaining(a);
+            if (dc != null && dc.isDefined()) continue;                  // inside a typed array/struct
             if (listing.getInstructionContaining(a) != null) continue;  // it's code
             int acc = accessSize(rm, a);
             int size = fitSize(listing, a, acc);

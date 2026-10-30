@@ -35,6 +35,7 @@ The scripts here fix all of that. The boundaries that bound the work are found *
                         →  FixStorage2 → ClassifyData · ApplyDataTypes → ClearAnalysisBookmarks
                         →  ScanMisdisasm · CountErr
                         ] × rounds, until the last recovery pass adds nothing
+                        →  AnalyzeSignatures  (params / return / stack locals, once, SIGS=0 skips)
  (3) mcore_port.sh      (optional) carry names over from an already-named reference project
  (V) mcore_verify.sh    verify + quantify the memory map (read-only, GUI may be open)
 ```
@@ -135,10 +136,10 @@ pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verd
 | `RecoverCodeRuns` | undefined runs that classify as CODE (clean decode to a terminator, not a table/padding) |
 | `RecoverFlowCode` | branch-only-reached blocks: computes the target of a `bt/bf/br/bsr` with empty `getFlows()` from the encoding, and the pool-slot pointer of an indirect `jmpi/jsri` — and **records it as a flow reference**. Ghidra only materializes computed-flow references during auto-analysis, so every branch in script-disassembled code had none: body tracing, `RetraceBodies` and the decompiler all stopped at the first `bt/bf` of such a function. The reference is what lets the rest of the loop (and the decompiler) follow it |
 | `FixJumpTables` | reverts absolute-pointer jump tables mis-disassembled as code; re-disassembles genuine jump-table targets incl. `jmp rN` switches |
-| `FixLiteralPools` | defines the PC-relative literal pools and clears the pool-as-code red; guarded not to re-type a non-terminator fall-through target (that's truncated code, not a pool) |
+| `FixLiteralPools` | defines the PC-relative literal pools (only inside `[codeLO, codeHI)` — a data-section table an instruction reads is not a pool, and typing its first word as a pointer because it looks like an address is a mistake the later typing passes rightly refuse to undo) and clears the pool-as-code red; guarded not to re-type a non-terminator fall-through target (that's truncated code, not a pool), and never to touch bytes inside a typed `Array`/`Structure` (an inline table a curator or the annotation replay typed — clearing "the 4 bytes at the slot" would destroy the whole item and leave fragments that `RecoverCodeRuns` turns into spurious functions; `FixResidual`, `ClassifyData` and `ApplyDataTypes` carry the same guard) |
 | `FixResidual` | mops up padding (`0x0000`/`0xFFFF`) and pool-edge spurious decodes |
 | `RetraceBodies` | drops spurious continuation functions and re-traces truncated function bodies — truncated by fall-through *or* by a branch: M·CORE branches are computed jumps, so a body traced before `RecoverFlowCode` materialized their targets stops at the first `bt/bf/br`; without this rule ~20% of the code region ends up as instructions no function owns |
-| `FunctionizeOrphans` | gives the remaining owner-less code a function: runs referenced from data (function pointers, vectors, jump tables), runs referenced from a function that tracing could not absorb, prologue-started runs, and *displaced entries* — a callback whose address is taken and passed as a parameter gets its first bytes auto-typed `uint8/16/32_t` by `ClassifyData`, so the run starts a few bytes after the real entry; the item is cleared and the function created at its address when the code decodes cleanly from there. Unreferenced speculative decodes are left alone and reported by `mcore_verify.sh` |
+| `FunctionizeOrphans` | gives the remaining owner-less code a function, rescanning until nothing new appears (a run of 4-byte switch-case stubs, each a jump-table target, yields one function per scan): runs referenced from data (function pointers, vectors, jump tables), runs referenced from a function that tracing could not absorb, prologue-started runs, and *displaced entries* — a callback whose address is taken and passed as a parameter gets its first bytes auto-typed `uint8/16/32_t` by `ClassifyData`, so the run starts a few bytes after the real entry; the item is cleared and the function created at its address when the code decodes cleanly from there. Unreferenced speculative decodes are left alone and reported by `mcore_verify.sh` |
 
 ### Then the data section + finish (once)
 
@@ -151,6 +152,12 @@ pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verd
 | `ClearAnalysisBookmarks` | removes the orange breadcrumb bookmarks (**must be last** of the writers) |
 | `ScanMisdisasm LO HI` | read-only: pointer tables still sitting inside instructions (**want 0**) |
 | `CountErr` | error-bookmark count (**want 0**) + function count |
+
+### Then signatures (once, after convergence)
+
+| script | what it does |
+|---|---|
+| `AnalyzeSignatures 40000 <dataHI>` | runs Ghidra's own stack-frame and decompiler-parameter-ID commands over the final function set, so functions get parameters, a return and stack locals (source `ANALYSIS`; user-set signatures are kept). Every recovery session runs `-noanalysis` — auto-analysis is what mis-decodes the image — so without this pass every function stays `undefined FUN_x(void)` and decompiled calls show no arguments. The slowest step (it decompiles every function); `SIGS=0` skips it, `SIG_TIMEOUT` (s, default 60) bounds one function |
 
 **Done looks like:** the driver prints `DONE: converged, 0 error bookmarks, 0 mis-disassembled
 tables` and exits 0; function count in the low thousands (not 8000+, which means the data section
@@ -182,13 +189,30 @@ tools/ghidra/mcore_port.sh <src_proj> <src_name> <src_program> <dst_proj> <dst_n
 - **`ApplyPortedNames`** applies the unambiguous names (guarded to only rename `FUN_`/`LAB_`).
 - **Same image?** If the reference is a project of the *same* image (the driver hashes both and
   `ApplyAnnotations` applies nothing when they differ), a second pass replays *every* annotation of
-  the reference by address — `ExportAnnotations` → `ApplyAnnotations`: all function names, including
-  the short and split-at-label ones the signature match refuses (a reference function that is a
-  branch-only block inside one of our bigger bodies becomes a **label** at that address; the body
-  stays whole), user labels (cal tables, RAM/MMIO variables, low-region items — generated `tbl_`/
-  `DAT_`/`LAB_` names are skipped on export and overwritten on apply), EOL/plate comments,
-  non-analysis bookmarks and concrete scalar types (same guard as `ApplyDataTypes`). A name that
-  clashes with a different real name of ours is added as a secondary label, never overwritten.
+  the reference by address — `ExportAnnotations` → `ApplyAnnotations`:
+  - **type definitions**: enums and structures are recreated in our data-type manager (shells
+    first, then fields, so nested references resolve), and **composite data** — structs, arrays,
+    enums, typed pointers — is applied wherever its whole span is retypeable (no instructions, no
+    composite already there); scalar types only *outside* the code region and only where we have
+    no item or one of the same length — the reference's scalar sizes are auto-derived like ours,
+    and a stray or shrunk scalar in a code-region pool run leaves fragments the next
+    `RecoverCodeRuns` pass turns into spurious code (re-running the recovery after a port must be
+    a no-op, and this is what made it not one);
+  - **memory blocks** the reference has and we don't (uninitialized placeholders such as a
+    `secondary_bootloader` block) are recreated with the same range and permissions;
+  - **function entries**: every reference entry gets a function here unless it lies inside one of
+    our whole bodies (then the body model wins and a named one becomes a **label** there). In the
+    only entries that are *already* instructions here are used — raw bytes are never disassembled
+    on the reference's say-so (its unnamed entries, in the code region and below `0x42000` alike,
+    are its own auto-analysis noise) — and entries in the data section are ignored. New functions
+    then get signatures from a final `AnalyzeSignatures` run in the port driver;
+  - **names**: all function names, including the short and split-at-label ones the signature match
+    refuses; user labels (cal tables, RAM/MMIO variables, low-region items — generated `tbl_`/`DAT_`/
+    `LAB_` names are skipped on export and overwritten on apply); a name that clashes with a
+    different real name of ours is added as a secondary label, never overwritten;
+  - EOL/plate comments and non-analysis bookmarks.
+  What it does **not** carry: function *signatures* — those come from `AnalyzeSignatures` in
+  Step 2, computed on our own listing, not copied.
 
 The image is already fully recovered after Step 2 — porting is about readability.
 
@@ -300,7 +324,7 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | script | step / role | args |
 |---|---|---|
 | `CreateMemBlocks.java` | 1 — add RAM/MMIO blocks | — |
-| `FixLiteralPools.java` | 2 — define pools, clear pool-as-code red | — |
+| `FixLiteralPools.java` | 2 — define pools, clear pool-as-code red | `[LO HI]` |
 | `FixResidual.java` | 2 — mop up padding / pool edges | — |
 | `RecoverRefCode.java` | 2 — code reached via unmaterialized pointers | `LO HI` |
 | `RecoverCodeRuns.java` | 2 — functionize CODE-classified runs | `LO HI` |
@@ -316,7 +340,8 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | `CountErr.java` | 2/V — error-bookmark + function counts | — |
 | `ExportSigs.java` | 3 — per-function porting signatures | `<out.sigs>` |
 | `ApplyPortedNames.java` | 3 — apply `addr<TAB>name` table | `<ported.tsv>` |
-| `ExportAnnotations.java` | 3 — dump names/labels/comments/bookmarks/types + image hash (read-only) | `<out.tsv>` |
+| `AnalyzeSignatures.java` | 2 — params / return / stack locals via Ghidra's stack + parameter-ID commands | `LO HI [timeout_s]` |
+| `ExportAnnotations.java` | 3 — dump blocks/types/entries/names/labels/comments/bookmarks/data types + image hash (read-only) | `<out.tsv>` |
 | `ApplyAnnotations.java` | 3 — replay them by address; refuses on image-hash mismatch | `<annotations.tsv>` |
 | `ImageMap.java` | V — block list + code/data/undefined landscape | — |
 | `ScanMisdisasm.java` | 2/V — detect table-as-code (want 0) | `[LO HI]` |
