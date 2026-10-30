@@ -28,7 +28,7 @@
 #        -> DataSectionClean {auto|DATA_LO} DATA_HI   (delete spurious fns, label tables)
 #        -> FixStorage2 -> ClassifyData + ApplyDataTypes -> ClearAnalysisBookmarks
 #        -> ScanMisdisasm -> CountErr                   (read-only health checks)
-#        ] until converged, then once: AnalyzeSignatures (params/return/locals; SIGS=0 skips)
+#        ] until converged, then once: ReadOnlyFlash -> AnalyzeSignatures (params/return/locals; SIGS=0 skips)
 set -euo pipefail
 [ $# -ge 3 ] || { sed -n '2,31p' "$0"; exit 2; }
 
@@ -146,13 +146,13 @@ status=0
 # arguments. Ghidra's own stack + decompiler-parameter-ID commands; idempotent. SIGS=0 skips.
 if [ "$status" -eq 0 ] && [ "${SIGS:-1}" != 0 ]; then
   LOG="$PROJ_DIR/$PROG.signatures.log"
-  echo ">> signatures: stack frames + decompiler parameter ID over 40000..$DATA_HI  (log: $LOG)"
+  echo ">> signatures: flash read-only, then stack frames + decompiler parameter ID over 40000..$DATA_HI  (log: $LOG)"
   rc=0
   "$HEADLESS" "$PROJ_DIR" "$NAME" \
       -process "$PROG" -noanalysis \
       -scriptPath "$ROOT/tools/ghidra/scripts" \
-      -postScript AnalyzeSignatures.java 40000 "$DATA_HI" "${SIG_TIMEOUT:-60}" > "$LOG" 2>&1 || rc=$?
-  grep -E "AnalyzeSignatures:|Unable to lock|ERROR|Exception" "$LOG" | grep -vE '^INFO  (REPORT|SCRIPT): ' \
+      -postScript ReadOnlyFlash.java -postScript AnalyzeSignatures.java 40000 "$DATA_HI" "${SIG_TIMEOUT:-60}" > "$LOG" 2>&1 || rc=$?
+  grep -E "ReadOnlyFlash:|AnalyzeSignatures:|Unable to lock|ERROR|Exception" "$LOG" | grep -vE '^INFO  (REPORT|SCRIPT): ' \
     | sed -E 's/^INFO  [A-Za-z0-9]+\.java> //; s/ \(GhidraScript\) *$//' || true
   if [ "$rc" -ne 0 ] || ! grep -q 'AnalyzeSignatures:' "$LOG"; then
     echo "!! signature pass failed (headless exit $rc) — see $LOG" >&2; exit 1

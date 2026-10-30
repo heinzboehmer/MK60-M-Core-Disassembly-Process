@@ -96,8 +96,8 @@ if [ "${SIGS:-1}" != 0 ]; then
   echo ">> signatures on the target (params / return / locals for new entries)"
   SIG_LOG="$WORK/signatures.log"; rc=0
   "$HEADLESS" "$DP" "$DN" -process "$DPROG" -noanalysis -scriptPath "$SCR" \
-      -postScript AnalyzeSignatures.java 40000 "${DST_DATA_HI:-f6a24}" "${SIG_TIMEOUT:-60}" > "$SIG_LOG" 2>&1 || rc=$?
-  grep -E "AnalyzeSignatures:|Unable to lock|ERROR" "$SIG_LOG" | sed -E 's/^INFO  [A-Za-z0-9]+\.java> //; s/ \(GhidraScript\) *$//' || true
+      -postScript ReadOnlyFlash.java -postScript AnalyzeSignatures.java 40000 "${DST_DATA_HI:-f6a24}" "${SIG_TIMEOUT:-60}" > "$SIG_LOG" 2>&1 || rc=$?
+  grep -E "ReadOnlyFlash:|AnalyzeSignatures:|Unable to lock|ERROR" "$SIG_LOG" | sed -E 's/^INFO  [A-Za-z0-9]+\.java> //; s/ \(GhidraScript\) *$//' || true
   if [ "$rc" -ne 0 ] || ! grep -q 'AnalyzeSignatures:' "$SIG_LOG"; then
     echo "!! signature pass failed (headless exit $rc) — see $SIG_LOG" >&2; exit 1
   fi

@@ -35,8 +35,9 @@ The scripts here fix all of that. The boundaries that bound the work are found *
                         →  FixStorage2 → ClassifyData · ApplyDataTypes → ClearAnalysisBookmarks
                         →  ScanMisdisasm · CountErr
                         ] × rounds, until the last recovery pass adds nothing
-                        →  AnalyzeSignatures  (params / return / stack locals, once, SIGS=0 skips)
+                        →  ReadOnlyFlash → AnalyzeSignatures  (params / return / stack locals, once, SIGS=0 skips)
  (3) mcore_port.sh      (optional) carry names over from an already-named reference project
+                        (by signature, then by call-site / table-slot propagation from every match)
  (V) mcore_verify.sh    verify + quantify the memory map (read-only, GUI may be open)
 ```
 
@@ -158,7 +159,13 @@ pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verd
 
 | script | what it does |
 |---|---|
-| `AnalyzeSignatures 40000 <dataHI>` | runs Ghidra's own stack-frame and decompiler-parameter-ID commands over the final function set, so functions get parameters, a return and stack locals (source `ANALYSIS`; user-set signatures are kept). Every recovery session runs `-noanalysis` — auto-analysis is what mis-decodes the image — so without this pass every function stays `undefined FUN_x(void)` and decompiled calls show no arguments. The slowest step (it decompiles every function); `SIGS=0` skips it, `SIG_TIMEOUT` (s, default 60) bounds one function |
+| `ReadOnlyFlash` | marks the flash image blocks non-writable. The Intel HEX loader creates them read-write-execute, and the decompiler never folds a load from writable memory — so every PC-relative literal-pool load decompiles as `*piRam0007ab3c` / `(*pcRam0007ab40)(1,0)` instead of the pool's value (`ccp_cro_pending`, `module_method_dispatch(1,0)`), and a table jump through the pool is never resolved into a switch. Read-only, the decompiler (with its default "respect read-only flags" option) propagates the pool constants, and the parameter-ID pass below sees resolved callees. The recovery scripts classify reference types, not block permissions, so a re-run of the recovery afterwards is still a no-op |
+| `AnalyzeSignatures 40000 <dataHI>` | runs Ghidra's own stack-frame and decompiler-parameter-ID commands over the final function set, so functions get parameters, a return and stack locals (source `ANALYSIS`; user-set signatures are kept). Every recovery session runs `-noanalysis` — auto-analysis is what mis-decodes the image — so without this pass every function stays `undefined FUN_x(void)` and decompiled calls show no arguments. Void returns are committed: without that, no function can ever become `void`, and four in five end up `undefined4` returning whatever the last callee left in `r2`, which the decompiler then threads through every caller as `iVar1 = …; return iVar1;`. The slowest step (it decompiles every function); `SIGS=0` skips it, `SIG_TIMEOUT` (s, default 60) bounds one function |
+
+What the signature pass still over-approximates is the **parameter count**: about a third of the
+functions come out with all six register parameters (`r2`–`r7`), and a callee declared with six
+forces every caller to show `in_r3` / `extraout_r4` noise. That is hand work on the functions you
+care about, callee first: fix the leaf's prototype and its callers clean up on their own.
 
 **Done looks like:** the driver prints `DONE: converged, 0 error bookmarks, 0 mis-disassembled
 tables` and exits 0; function count in the low thousands (not 8000+, which means the data section
@@ -178,16 +185,31 @@ tools/ghidra/mcore_port.sh <src_proj> <src_name> <src_program> <dst_proj> <dst_n
 ```
 
 - **`ExportSigs`** emits an FNV-1a-of-masked-halfwords signature per function (masks the lrw/jsri
-  pool slot and branch displacement — the only things that move between variants). Runs on a
-  snapshot, so the source GUI may stay open.
-- **`port_symbols.py`** ports a name only when the source name is real, its signature is unique among
-  named source functions, it occurs exactly once in the target, and both bodies have ≥ `min_instr`
-  (default 8) instructions. The rest is the **manual tail** it writes to `tail.txt`:
-  - `src-ambiguous`/`dst-ambiguous` — one signature, several candidates; disambiguate by call-site
-    context, add the pairs to `ported.tsv`, re-run `ApplyPortedNames`.
-  - unmatched targets — variant-specific or never-named-in-source; chip at them by **anchor
-    propagation** (a `FUN_` whose callers/callees are all named is usually nameable) in the GUI.
-- **`ApplyPortedNames`** applies the unambiguous names (guarded to only rename `FUN_`/`LAB_`).
+  pool slot and branch displacement — the only things that move between variants), plus the body's
+  outgoing **edges** in order: call targets (`bsr`, and `jsri` through its pool slot), tail jumps to
+  another function's entry, and the pointer tables it loads through the pool (consecutive words that
+  all point at instructions). Runs on a snapshot, so the source GUI may stay open.
+- **`port_symbols.py`** ports a name by **signature** only when the source name is real, its
+  signature is unique among named source functions, it occurs exactly once in the target, and both
+  bodies have ≥ `min_instr` (default 8) instructions. Then it **propagates** from every matched pair
+  (a signature match, or a target that already carries the source's name) to a fixpoint: a matched
+  caller's call targets correspond position by position, and so do the slots of a pointer table it
+  loads — the compiler emits the same code for the same source, so the k-th call of the same function
+  is the same callee in both images. This is a property of compiled code, not of M·CORE or of any
+  image; it is what reaches the short helpers the signature floor refuses (a 2-instruction
+  `return r3` has no unique signature, but "the only callee of `ccp_cmd_SET_MTA`" does). Guards:
+  same edge sequence in both bodies, same table length, only `FUN_` targets are named, a target two
+  anchors name differently is a conflict and left alone, a callee pair whose signatures differ is
+  accepted only when the sizes are within 25%, and a source name may land on one target only. Named
+  table bases (`ccp_command_table`) are ported as labels. `ported.tsv` carries the method per row
+  (`signature` / `call-site` / `table-slot` / `table-label`). The rest is the **manual tail** it
+  writes to `tail.txt`:
+  - `src-ambiguous`/`dst-ambiguous` — one signature, several candidates that no anchor resolved;
+    disambiguate by call-site context, add the pairs to `ported.tsv`, re-run `ApplyPortedNames`.
+  - `conflict` — propagation disagreed; look at both anchors.
+  - unmatched targets — variant-specific or never-named-in-source.
+- **`ApplyPortedNames`** applies the names (guarded to only rename `FUN_`/`LAB_`) and notes the
+  method in each function's plate comment.
 - **Same image?** If the reference is a project of the *same* image (the driver hashes both and
   `ApplyAnnotations` applies nothing when they differ), a second pass replays *every* annotation of
   the reference by address — `ExportAnnotations` → `ApplyAnnotations`:
@@ -321,10 +343,10 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
 | `tools/install_mcore.sh` | install/rebuild the patched M·CORE SLEIGH (see SETUP.md) |
 | `tools/parse_0pa.py` | .0pa → `.cpu.hex` (with `--reloc`) + region `.bin`s |
 | `tools/find_boundary.py` | prologue-scan: arch check + programmatic codeHI/dataHI from a `.cpu.hex` |
-| `tools/port_symbols.py` | signature 1:1 matcher; writes `ported.tsv` + `tail.txt` |
+| `tools/port_symbols.py` | signature 1:1 matcher + call-site/table-slot propagation; writes `ported.tsv` + `tail.txt` |
 | `tools/ghidra/mcore_import.sh` | step 1: arch-check + parse + import + `CreateMemBlocks` |
 | `tools/ghidra/mcore_recover.sh` | step 2: auto-bounds + recover + finish, repeated until converged; writes `<prog>.bounds` |
-| `tools/ghidra/mcore_port.sh` | step 3: `ExportSigs` ×2 + match + `ApplyPortedNames` |
+| `tools/ghidra/mcore_port.sh` | step 3: `ExportSigs` ×2 + match + propagate + `ApplyPortedNames` |
 | `tools/ghidra/mcore_verify.sh` | V: read-only health check + memory-map numbers in one run (snapshot; GUI may be open) |
 | `tools/ghidra/dump.sh <proj_dir> <name> <cpu_hex> ADDR:N …` | read-only disassembly dump from a snapshot (GUI may be open) |
 
@@ -351,7 +373,8 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | `ApplyDataTypes.java` | 2 — undefined → `uint8/16/32_t` typedefs | `<types.tsv or /dev/null>` |
 | `ClearAnalysisBookmarks.java` | 2 — drop breadcrumb bookmarks (**last**) | — |
 | `CountErr.java` | 2/V — error-bookmark + function counts | — |
-| `ExportSigs.java` | 3 — per-function porting signatures | `<out.sigs>` |
+| `ReadOnlyFlash.java` | 2 — flash blocks non-writable so the decompiler folds pool loads (before `AnalyzeSignatures`) | — |
+| `ExportSigs.java` | 3 — per-function porting signatures + call/jump/table edges | `<out.sigs>` |
 | `ApplyPortedNames.java` | 3 — apply `addr<TAB>name` table | `<ported.tsv>` |
 | `AnalyzeSignatures.java` | 2 — params / return / stack locals via Ghidra's stack + parameter-ID commands | `LO HI [timeout_s]` |
 | `ExportAnnotations.java` | 3 — dump blocks/types/entries/names/labels/comments/bookmarks/data types + image hash (read-only) | `<out.tsv>` |

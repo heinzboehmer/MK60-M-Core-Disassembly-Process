@@ -5,7 +5,12 @@
 // with no arguments. Runs Ghidra's own commands directly, nothing else:
 //   NewFunctionStackAnalysisCmd  — stack frame: locals + stack params from the prologue
 //   DecompilerParameterIdCmd     — register params/return from decompiler data flow
-//                                  (source = ANALYSIS; user-set signatures are kept)
+//                                  (source = ANALYSIS; user-set signatures are kept;
+//                                  void returns ARE committed — without that flag no function
+//                                  can ever become `void`, and 80% of them end up `undefined4`
+//                                  returning whatever the last callee left in r2)
+// Run ReadOnlyFlash first: with writable flash the decompiler cannot resolve pool-loaded
+// callees, so parameter ID works against unknown call targets.
 // Idempotent; re-run after any change to the function set. Args: LO HI (hex, no 0x); the
 // range is [LO, HI) over function ENTRIES (use 40000 <dataHI> to include the init stubs).
 //@category MK60
@@ -38,7 +43,7 @@ public class AnalyzeSignatures extends GhidraScript {
         boolean okStack = stack.applyTo(currentProgram, monitor);
 
         DecompilerParameterIdCmd pid = new DecompilerParameterIdCmd("AnalyzeSignatures", entries,
-                SourceType.ANALYSIS, true, false, timeout);
+                SourceType.ANALYSIS, true, true, timeout);
         boolean okPid = pid.applyTo(currentProgram, monitor);
 
         int[] after = count(lo, hi);

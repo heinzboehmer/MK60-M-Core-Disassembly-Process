@@ -1,5 +1,6 @@
-// WRITE: apply cross-image ported names. Args: tsv (addr<TAB>name). Guard: only names functions
-// whose current name is FUN_/generic; marks each with a plate comment noting it's auto-ported.
+// WRITE: apply cross-image ported names. Args: tsv (addr<TAB>name[<TAB>method]). Guard: only names
+// functions whose current name is FUN_/generic; marks each with a plate comment noting how it was
+// ported (the optional 3rd column: signature / call-site / table-slot / table-label).
 //@category MK60
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
@@ -19,7 +20,7 @@ public class ApplyPortedNames extends GhidraScript {
             if (p!=null && p.getSource()!=SourceType.DEFAULT && !p.getName().startsWith("FUN_")
                 && !p.getName().startsWith("LAB_")) { skipped++; continue; }
             try { createLabel(a, name, true, SourceType.USER_DEFINED);
-                  if (f!=null && f.getComment()==null) f.setComment("[auto-ported from DSCM90 by signature match]");
+                  if (f!=null && f.getComment()==null) f.setComment("[auto-ported from the reference image by " + (c.length>2 ? c[2].trim() : "signature match") + "]");
                   applied++; } catch (Exception e) { skipped++; }
         }
         r.close();
