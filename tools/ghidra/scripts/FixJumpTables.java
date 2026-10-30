@@ -108,7 +108,7 @@ public class FixJumpTables extends GhidraScript {
                 } else if (!cleanDecode(ta)) continue;
                 try {
                     disassemble(ta);
-                    if (getInstructionAt(ta) != null) { disassembled++; if (createFunction(ta, null) != null) fns++; }
+                    if (getInstructionAt(ta) != null) { disassembled++; if (getFunctionAt(ta) == null && createFunction(ta, null) != null) fns++; }
                 } catch (Exception ex) {}
             }
         }

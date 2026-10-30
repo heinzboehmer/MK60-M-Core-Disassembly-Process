@@ -11,8 +11,8 @@
 # Set FULL=1 to also print every DataTableInventory row (one per code-referenced table base).
 #
 # Exit status: 0 = healthy (0 error bookmarks, 0 mis-disassembled tables, 0 code bytes in
-# the data section, 0 referenced code runs owned by no function); 4 = one of those is
-# non-zero (details printed).
+# the data section, 0 referenced code runs owned by no function, 0 prologues left in
+# non-code bytes); 4 = one of those is non-zero (details printed).
 set -euo pipefail
 [ $# -ge 3 ] || { sed -n '2,14p' "$0"; exit 2; }
 
@@ -51,6 +51,7 @@ rc=0
     -postScript RegionStats.java 40000 "$CODE_LO" \
     -postScript RegionStats.java "$CODE_LO" "$DATA_LO" \
     -postScript RegionStats.java "$DATA_LO" "$DATA_HI" \
+    -postScript UndefPrologues.java "$CODE_LO" "$DATA_LO" \
     -postScript DataTableInventory.java "$DATA_LO" "$DATA_HI" > "$LOG" 2>&1 || rc=$?
 
 out(){ sed -nE "s/^INFO  $1\.java> (.*) \(GhidraScript\) *$/\1/p" "$LOG"; }
@@ -62,6 +63,7 @@ fi
 echo; echo "=== ImageMap ==="; out ImageMap
 echo; echo "=== ScanMisdisasm (code region $CODE_LO..$DATA_LO) ==="; out ScanMisdisasm
 echo; echo "=== RegionStats ==="; out RegionStats | grep -E '^RegionStats'
+echo; echo "=== UndefPrologues (code region $CODE_LO..$DATA_LO) ==="; out UndefPrologues
 if [ "${FULL:-}" = 1 ]; then echo; echo "=== DataTableInventory ==="; out DataTableInventory; fi
 
 ERRS="$(out CountErr | sed -n 's/.*Error bookmarks=\([0-9]*\).*/\1/p')"
@@ -74,6 +76,7 @@ CODELINE="$(out RegionStats | grep "^RegionStats 0*${CODE_LO}-")"
 ORPHAN="$(echo "$CODELINE" | sed -n 's/.*orphanInstrBytes=\([0-9]*\).*/\1/p')"
 ORPHANREFD="$(echo "$CODELINE" | sed -n 's/.*orphanRefdRuns=\([0-9]*\).*/\1/p')"
 CODEBYTES="$(echo "$CODELINE" | sed -n 's/.*instrBytes=\([0-9]*\).*/\1/p')"
+UNDEFPRO="$(out UndefPrologues | sed -n 's/.*prologuesNotCode=\([0-9]*\).*/\1/p')"
 
 echo
 echo "=== SUMMARY ($NAME / $PROG) ==="
@@ -83,6 +86,7 @@ printf '%-42s %s   (want 0)\n'  "code bytes in data section $DATA_LO..$DATA_HI" 
 printf '%-42s %s   (want low thousands)\n' "functions"                    "${FNS:-?}"
 printf '%-42s %s of %s   (unreferenced speculative decodes; informational)\n' "code bytes owned by no function" "${ORPHAN:-?}" "${CODEBYTES:-?}"
 printf '%-42s %s   (want 0)\n'  "orphan code runs referenced by data/functions" "${ORPHANREFD:-?}"
+printf '%-42s %s   (want 0; functions never disassembled)\n' "prologues in non-code bytes" "${UNDEFPRO:-?}"
 printf '%-42s %s\n'             "code-referenced table bases"             "${BASES:-?}"
 printf '%-42s %s   (auto-analysis noise below codeLO; left alone by design)\n' "functions in 40000..$CODE_LO" "${LOWFNS:-?}"
 
@@ -91,5 +95,6 @@ status=0
 [ "${MISRUNS:-1}" -eq 0 ] || status=4
 [ "${DATACODE:-1}" -eq 0 ] || status=4
 [ "${ORPHANREFD:-1}" -eq 0 ] || status=4
+[ "${UNDEFPRO:-1}" -eq 0 ] || status=4
 [ "$status" -eq 0 ] && echo ">> HEALTHY" || echo "!! NOT CLEAN — re-run mcore_recover.sh (it resumes and converges)" >&2
 exit "$status"

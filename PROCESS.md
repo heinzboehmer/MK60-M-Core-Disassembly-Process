@@ -28,7 +28,7 @@ The scripts here fix all of that. The boundaries that bound the work are found *
  (1) mcore_import.sh    arch-check  →  parse .0pa --reloc  →  import MCORE:BE:32  →  CreateMemBlocks
  (2) mcore_recover.sh   find_boundary.py (auto codeHI/dataHI)
                         →  FixLiteralPools
-                        →  [RecoverRefCode · RecoverCodeRuns · RecoverFlowCode ·
+                        →  [RecoverRefCode · RecoverCodeRuns · RecoverPrologues · RecoverFlowCode ·
                             FixJumpTables · FixLiteralPools · FixResidual · RetraceBodies ·
                             FunctionizeOrphans] ×N
                         →  DataSectionClean auto  (auto-pins dataLO = last real fn end → <prog>.bounds)
@@ -134,6 +134,7 @@ pin it yourself instead of `auto`; `FORCE=1` proceeds despite a non-M·CORE verd
 |---|---|
 | `RecoverRefCode` | code reached through function pointers whose refs were never materialized; also seeds the VBR exception-vector table (`0x40000`, 128 entries — bit 0 of an entry is the alternate-register-file flag, not an address bit) |
 | `RecoverCodeRuns` | undefined runs that classify as CODE (clean decode to a terminator, not a table/padding) |
+| `RecoverPrologues` | functions *inside* an undefined run. `RecoverCodeRuns` judges a run from its first byte, so a run that opens with the previous function's literal pool is rejected whole and every function after the pool stays `??` — on a fresh image ~13 KB of the code region, 50–70 functions, raising no error bookmark and no orphan count. This pass seeds on the frame prologue itself (`subi r0,N ; stm rX-r15,(r0)`, the pair `find_boundary.py` trusts) wherever it sits in undefined bytes — or in a small scalar nothing reads or writes, the other flavour: an address-taken callback whose entry byte `ClassifyData` typed `uint8_t` — and the code decodes cleanly from there. A body whose straight-line flow falls into such a mis-typed scalar (a constant that looks like a code address, e.g. `0x80000` as a bit mask, gets PARAM references and the word *at* that address is typed mid-function) has the item cleared and the disassembly continued; an unnamed `FUN_` reached by straight fall-through that nothing calls, jumps to or points at is a spurious continuation and is absorbed. `mcore_verify.sh` reports prologues left in non-code bytes (want 0) |
 | `RecoverFlowCode` | branch-only-reached blocks: computes the target of a `bt/bf/br/bsr` with empty `getFlows()` from the encoding, and the pool-slot pointer of an indirect `jmpi/jsri` — and **records it as a flow reference**. Ghidra only materializes computed-flow references during auto-analysis, so every branch in script-disassembled code had none: body tracing, `RetraceBodies` and the decompiler all stopped at the first `bt/bf` of such a function. The reference is what lets the rest of the loop (and the decompiler) follow it |
 | `FixJumpTables` | reverts absolute-pointer jump tables mis-disassembled as code; re-disassembles genuine jump-table targets incl. `jmp rN` switches |
 | `FixLiteralPools` | defines the PC-relative literal pools (only inside `[codeLO, codeHI)` — a data-section table an instruction reads is not a pool, and typing its first word as a pointer because it looks like an address is a mistake the later typing passes rightly refuse to undo) and clears the pool-as-code red; guarded not to re-type a non-terminator fall-through target (that's truncated code, not a pool), and never to touch bytes inside a typed `Array`/`Structure` (an inline table a curator or the annotation replay typed — clearing "the 4 bytes at the slot" would destroy the whole item and leave fragments that `RecoverCodeRuns` turns into spurious functions; `FixResidual`, `ClassifyData` and `ApplyDataTypes` carry the same guard) |
@@ -227,7 +228,8 @@ tools/ghidra/mcore_verify.sh <proj_dir> <name> <image.cpu.hex>      # FULL=1 for
 One read-only run against a snapshot of the project (the GUI may stay open). It takes the bounds
 from `<prog>.bounds`, runs the scanners below, and prints a summary — error bookmarks, mis-disassembled
 table runs, code bytes in the data section, orphan code runs referenced by data or by a function
-(all want 0), code bytes owned by no function at all (unreferenced speculative decodes;
+(all want 0), prologues still sitting in non-code bytes (functions the recovery never
+disassembled; want 0), code bytes owned by no function at all (unreferenced speculative decodes;
 informational), function count, table-base count, and the function count in the region below
 `codeLO` — exiting 4 if anything gated isn't clean. The individual
 scanners, if you want one on its own (`dump.sh` shows the snapshot idiom):
@@ -237,6 +239,9 @@ scanners, if you want one on its own (`dump.sh` shows the snapshot idiom):
   defined bytes end and that the code region has little residual undefined.
 - **`ScanMisdisasm.java`** — detects ≥4 consecutive code-pointer words inside instructions (a
   mis-disassembled jump table). **Must read 0.**
+- **`UndefPrologues.java [LO HI]`** — frame prologues in bytes that are not instructions (undefined,
+  or a small scalar nothing reads/writes): functions never disassembled, invisible to every other
+  check because raw `??` raises nothing. **Must read 0**; `RecoverPrologues` is what clears it.
 - **`DataTableInventory.java [DATA_LO DATA_HI]`** — harvests code-referenced table bases in the data
   section: how you quantify the data map (grouped by reader subsystem).
 - **`UpperScan.java [LO]`** — classify undefined/code runs from an address up (PADDING / MONOTONIC /
@@ -268,6 +273,13 @@ bounds, the `ImageMap` landscape, the `DataTableInventory` table count, and the 
   `ForceData.java` (revert). Anything larger, or any run that *is* referenced, means a recovery rule
   is missing — see the three cases above (branch references, vector table, displaced entries), which
   is how this list was built.
+- **"No errors" ≠ complete, part two: raw `??` in the code region can be whole functions.** A
+  constant that happens to look like a code address (`0x80000` used as a bit-19 mask, say) gets
+  PARAM references from the `lrw` that loads it; `ClassifyData` then types the word *at* that
+  address even when it is mid-function, the body that falls into it is never traced, and a run of
+  functions behind a literal pool is rejected by `RecoverCodeRuns` as a unit. Nothing red, nothing
+  orphaned — the only tell is `undefBytes` in the code region and the prologues inside it.
+  `RecoverPrologues` recovers them; `mcore_verify.sh` gates on `UndefPrologues` = 0.
 - **Don't force-disassemble the residual `??`.** After recovery, remaining undefined in the code
   region is literal/inline pools (data), and `??` in RAM is uninitialized (correct). The data section
   is *supposed* to be undefined-then-labeled.
@@ -328,6 +340,7 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | `FixResidual.java` | 2 — mop up padding / pool edges | — |
 | `RecoverRefCode.java` | 2 — code reached via unmaterialized pointers | `LO HI` |
 | `RecoverCodeRuns.java` | 2 — functionize CODE-classified runs | `LO HI` |
+| `RecoverPrologues.java` | 2 — functionize prologue-seeded code inside undefined runs; clear mis-typed scalars a body falls into | `LO HI` |
 | `RecoverFlowCode.java` | 2 — branch-only-reached blocks | `LO HI` |
 | `FixJumpTables.java` | 2 — revert table-as-code, redo jump-table targets | `LO HI` |
 | `RetraceBodies.java` | 2 — drop spurious continuations, re-trace bodies | `LO HI` |
@@ -345,6 +358,7 @@ The drivers run these for you; listed so you can run one on its own. Bound-confi
 | `ApplyAnnotations.java` | 3 — replay them by address; refuses on image-hash mismatch | `<annotations.tsv>` |
 | `ImageMap.java` | V — block list + code/data/undefined landscape | — |
 | `ScanMisdisasm.java` | 2/V — detect table-as-code (want 0) | `[LO HI]` |
+| `UndefPrologues.java` | V — prologues in non-code bytes = functions never disassembled (want 0) | `[LO HI]` |
 | `DataTableInventory.java` | V — harvest code-referenced table bases | `[DATA_LO DATA_HI]` |
 | `UpperScan.java` | V — classify undefined/code runs from an address up | `[LO]` |
 | `RegionStats.java` | V — functions/instructions/undefined/orphan-code bytes in a range | `LO HI [listMax]` |

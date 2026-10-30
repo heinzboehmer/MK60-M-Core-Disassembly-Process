@@ -23,7 +23,7 @@
 #              3 = not an M·CORE image.   4 = finished but not clean (details printed).
 #
 # Chain: FixLiteralPools
-#        -> [RecoverRefCode RecoverCodeRuns RecoverFlowCode FixJumpTables
+#        -> [RecoverRefCode RecoverCodeRuns RecoverPrologues RecoverFlowCode FixJumpTables
 #            FixLiteralPools FixResidual RetraceBodies FunctionizeOrphans] x passes  (codeLO..codeHI)
 #        -> DataSectionClean {auto|DATA_LO} DATA_HI   (delete spurious fns, label tables)
 #        -> FixStorage2 -> ClassifyData + ApplyDataTypes -> ClearAnalysisBookmarks
@@ -65,7 +65,7 @@ SHOW='Recover|FixLiteralPools:|FixJumpTables:|FixResidual:|RetraceBodies:|Functi
 # plus functions RetraceBodies removed or re-traced. Zero means the loop had nothing left to do.
 last_pass_work(){  # <log>
   local total=0 v
-  for s in RecoverRefCode RecoverCodeRuns RecoverFlowCode FixJumpTables FunctionizeOrphans; do
+  for s in RecoverRefCode RecoverCodeRuns RecoverPrologues RecoverFlowCode FixJumpTables FunctionizeOrphans; do
     v="$(grep "$s:" "$1" | tail -1 | sed -n 's/.*newFunctions=\([0-9]*\).*/\1/p')"
     total=$((total + ${v:-0}))
   done
@@ -86,6 +86,7 @@ for round in $(seq 1 "$ROUNDS"); do
   for _ in $(seq 1 "$PASSES"); do
     ARGS+=( -postScript RecoverRefCode.java "$CODE_LO" "$CODE_HI"
             -postScript RecoverCodeRuns.java "$CODE_LO" "$CODE_HI"
+            -postScript RecoverPrologues.java "$CODE_LO" "$CODE_HI"
             -postScript RecoverFlowCode.java "$CODE_LO" "$CODE_HI"
             -postScript FixJumpTables.java "$CODE_LO" "$CODE_HI"
             -postScript FixLiteralPools.java "$CODE_LO" "$CODE_HI"
