@@ -1,6 +1,6 @@
 # E46 MK60 steering-ratio tables (LENKWINKELKENNLINIE)
 
-Read-only findings from the raw dumps `817.3_e46_m3_zcp_mk60_full_dump.bin` (ZCP), `818.3_e46_m3_mk60_full_dump.bin` (M3 non-ZCP) and `820.3_e46_non_m_mk60_full_dump.bin` (non-M). No code path has been traced yet; the layout is inferred from the E9x M3 description in cmg5461/mk60e5-firmware `analysis/DSC_STEERING_AND_VEHICLE_MODEL_7846816A.md` §3.1 (`steer_ratio_convert`).
+Read-only findings from the raw dumps `817.3_e46_m3_zcp_mk60_full_dump.bin` (ZCP), `818.3_e46_m3_mk60_full_dump.bin` (M3 non-ZCP) and `820.3_e46_non_m_mk60_full_dump.bin` (non-M). The table layout was first inferred from the E9x M3 description in cmg5461/mk60e5-firmware `analysis/DSC_STEERING_AND_VEHICLE_MODEL_7846816A.md` §3.1 (`steer_ratio_convert`). The E46 convert path, and the effect of set 2 versus set 4 on `r_ref`, are noted below.
 
 ## Layout
 
@@ -10,7 +10,7 @@ Read-only findings from the raw dumps `817.3_e46_m3_zcp_mk60_full_dump.bin` (ZCP
 | ZCP | 0x3EF5C | 1–6 (byte-identical to the non-ZCP) |
 | Non-M | (calibration tail) | 1–3 only, identical to sets 1–3 above |
 
-Immediately before the steering-ratio block is a separate 2-point curve used by another function (x = {10000, 20000}, y = {286, 857}); those words are not a header of this block. The steering-ratio block starts at the clamp list (last x of each set: 14400, 12274, 12891, 12205, 14400, 12685), then all x sets followed by all y sets, each 4 × s16. x is steering-wheel angle in sensor counts; y is the overall (secant) ratio × 1024, linearly interpolated on |angle| and clamped to the last x. The byte before the preceding curve differs (0x83 non-ZCP, 0xC9 ZCP) and belongs to another table.
+Immediately before the steering-ratio block is a separate 2-point curve used by another function (x = {10000, 20000}, y = {286, 857}); those words are not a header of this block. The steering-ratio block starts at the clamp list (last x of each set: 14400, 12274, 12891, 12205, 14400, 12685), then all x sets followed by all y sets, each 4 × s16. x is steering-wheel angle in sensor counts; y is the overall (secant) ratio × 1024, linearly interpolated on |angle| and clamped to the last x. The byte before the preceding curve differs (0x83 non-ZCP, 0xC9 ZCP) and belongs to another table: it is dataset-10 T4 (131 versus 201). See `e46_m3_dataset10_vs_zcp.md`.
 
 | Set | x (counts) | y (ratio × 1024) |
 |---|---|---|
@@ -49,8 +49,21 @@ Lock angles agree with the vehicles: ZCP and non-M about 3 turns lock to lock, M
 
 ![non-M vs M3 vs ZCP](e46_steering_ratio_tables.png)
 
+## Set 2 versus set 4
+
+NCS `LENKWINKELKENNLINIE_2` data `d` selects set `d+1`. Set 4 (`wert_04`) is the ZCP / CSL rack map (centre overall ratio 16.80). Set 2 (`wert_02`) is the non-M map (centre 16.00). Sets 1–6 are byte-identical on both M3 images, so a choice between set 2 and set 4 is a coding choice, not a flash-calibration difference between the two M3 programs.
+
+Because `y` is the overall (secant) ratio, a lower coded ratio produces a larger modelled road-wheel angle for the same steering-wheel angle. At centre, set 2 is 16.00/16.80 ≈ 4.8 % lower than set 4. Around 30° of steering-wheel angle the ratio is about 5.5 % lower, so the same wheel position yields about 5.5 % more modelled δ and, through
+
+```
+r_ref = δ · v / (A · (1 + v² / v_ch²))
+```
+
+about 5.5 % more `r_ref`. In the mid-speed sweeper band that is on the order of 0.5 °/s of model yaw. This is a **model bias**, not a change to the physical rack. Its scale is smaller than the dataset-10 `v_ch` difference between the non-ZCP (96.15 km/h) and ZCP (119.04 km/h) columns (see `e46_m3_dataset10_vs_zcp.md`). The absolute degree figures use the same unconfirmed 0.04375 °/count scale as the table above; the percentage ratio does not depend on that scale.
+
 ## Open
 
-- [ ] Trace the E46 equivalent of `steer_ratio_convert` and the coding field that selects the set.
+- [x] The E46 path that applies these tables to the yaw model has been traced: `r_ref` at `0x29606` uses the filtered steer from this map (see `e46_m3_dataset10_vs_zcp.md`).
+- [ ] The coding field that selects the set has not been traced in the listing; the NCS wert mapping above is from the daten file.
 - [ ] Confirm the E46 angle scale (log SZL angle against road-wheel angle on turn plates).
 - [ ] Identify set 3 (wert_03) and set 6.
