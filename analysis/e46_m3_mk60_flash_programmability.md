@@ -1,6 +1,6 @@
 # E46 MK60 flash programmability and the SGFM flash module
 
-Hand-written note (2026-11-21). Companion to `e46_m3_mk60_kline_access_and_flash.md`,
+Hand-written note (2026-11-21; updated 2026-11-25). Companion to `e46_m3_mk60_kline_access_and_flash.md`,
 `e46_m3_mk60_image_check_word.md`, `e46_m3_non_zcp_mk60_image.md`, `nonm_mk60_image.md` and
 `zcp_mk60_image.md`. Addresses are from the 818.3 non-ZCP image unless a twin is named. This is a
 description of what the three E46 application images contain and do not contain; it is not a
@@ -15,8 +15,11 @@ Flash for M·CORE, the MMC2114 family), not the older CMFR (MMC2107). The three 
 contain **no flash program/erase driver, no bootloader, and no copy-to-RAM programming stub** — the
 same "flat program, no loader" finding recorded in the image notes, now tied to the specific flash
 technology. A resident routine therefore cannot program the program-flash region; that must go
-through the SGFM controller, whose register base is **not referenced anywhere in these images** and
-so cannot be pinned from the firmware. The resident KWP/K-line stack offers no download service and
+through the SGFM controller. The application images still do not drive those registers, but the
+family base is the M·CORE constant **`0x00D00000`** ([*MMC2114 Advance Information Manual*, MMC2114/D
+Rev. 1, April 2002, Table 10-2](../docs/references/MMC2114D_Rev1_Apr2002.pdf)). Every SGFM register is supervisor-only; user-mode accesses have no
+effect and result in a cycle-termination transfer error, which matches bench probes of `0xD00000`
+from a user-mode stub. No live program or erase has been demonstrated. The resident KWP/K-line stack offers no download service and
 no programming session, and the SecurityAccess (0x27) scheme — though symmetric — reaches only plain
 memory stores, never flash program/erase. The "813.3/817.3 flashable, 818.3 not" split reported by
 the community is therefore **not encoded in the application image**; it is external (a bootloader
@@ -36,15 +39,15 @@ The 256 KB image size and this config-field layout place the part in the **MMC21
 ## 2. SGFM program/erase model (from public silicon docs)
 From Freescale AN2286, AN1756 and the SGFM/ColdFire-CFM register model:
 - Registers: a configuration register (CBEIE/CCIE), a **clock-divider (CLKD)** register that must be
-  written once before any command (or no command executes), a **status** register with **CBEIF**
-  (command-buffer-empty, bit 7) and **CCIF** (command-complete, bit 6) plus ACCERR/PVIOL/BLANK, a
-  **command** register, and protection/security registers.
-- Commands: `0x05` blank-check, `0x06` erase-verify, **`0x20` word program**, **`0x40` page erase**,
-  **`0x41` mass erase**.
+ written once before any command (or no command executes), a **status** register with **CBEIF**
+ (command-buffer-empty, bit 7) and **CCIF** (command-complete, bit 6) plus ACCERR/PVIOL/BLANK, a
+ **command** register, and protection/security registers.
+- Commands ([*MMC2114*](../docs/references/MMC2114D_Rev1_Apr2002.pdf) Table 10-5): **`$05` erase-verify** (RDARY1 / all 1s), **`$20` word program**
+ (PGM), **`$40` page erase** (PGERS), **`$41` mass erase** (MASERS).
 - Sequence: write CLKD once; clear ACCERR/PVIOL; write the target word to the flash address; write
-  the command; write 1 to CBEIF to launch; poll CCIF until set.
+ the command; write 1 to CBEIF to launch; poll CCIF until set.
 - Granularity: **program = one 32-bit word; page erase = 1 KB** (two interleaved 512-byte pages;
-  low address bits ignored). [C]
+ low address bits ignored). [C]
 
 This **corrects** the earlier inference (in `e46_m3_mk60_kline_access_and_flash.md`) that the erase
 block might be 4 KB from the ZCP padding: SGFM page erase is **1 KB**. Under a 1 KB page, the
@@ -52,17 +55,31 @@ dataset-10 A/B cells (`0x3E8A4`–`0x3E8C1`) and the 818.3 check word (`0x3FCE4`
 1 KB pages (`0x3E800` and `0x3FC00`), each of which is mostly live data and would have to be buffered
 and reprogrammed word-by-word. [I]
 
-## 3. No flash-controller reference in any image
+## 3. No flash-controller driver in any image; family base is `0x00D00000`
 A scan of every `lrw` pool constant in the on-chip peripheral window `0x00C00000`–`0x00FFFFFF`,
 across 817.3, 818.3 and 820.3, finds the live modules (clock `0xC10000`, PIT `0xC80000`, SCI
 `0xCC/0xCD0000`, a CAN controller at `0xCF0000`, a second CAN at `0xFA0000`, a watchdog/clock/CRC
 block at `0xEF82xx`, the SIM at `0xFF0000`) but **no block driven as a flash command/status/clock
-controller**. The stock M·CORE flash-control slot `0x00D00000` and the related-lineage base
-`0x00F60000` appear only as data, never as a code-driven MMIO base. [C]
+controller**. The stock M·CORE flash-control slot `0x00D00000` appears only as data, never as a
+code-driven MMIO base. [C]
 
-So the flash-controller base on this (customised) silicon is **not derivable from the application
-firmware**; it is only touched by whatever programs the part from outside. Best bench-probe
-candidates remain `0x00D00000` (stock flash slot) and `0x00F60000`. [I]/[open]
+That does not mean the address is unknown. The [*MMC2114 Advance Information Manual* (MMC2114/D
+Rev. 1, April 2002)](../docs/references/MMC2114D_Rev1_Apr2002.pdf) maps FLASH registers (SGFM) at **`0x00D00000`** (CMFR occupied the same slot on
+the MMC2107). Table 10-2 marks every SGFM register **supervisor access only**: user-mode accesses
+have no effect and result in a cycle-termination transfer error. Bench probes of `0xD00000` from a
+user-mode RAM stub faulted in exactly that way. The
+earlier “base not pinned; also try `0x00F60000`” wording is superseded by the manual map in this
+section. Elevated bench, 2026-11-26: after `0x10A1` set supervisor, halfword reads of `0xD0001C`
+and the other `0xD00000` offsets tried, and a single probe of `0x00F60000`, still faulted (no
+survival `0x66`). Those MMC2114-family candidate bases are not a live flash-controller map from
+elevated mfg A6 exec on this 818.3. The manual cite above stays. See
+`e46_m3_mk60_elevated_mmio_findings.md`.
+
+Register offsets in that manual, for a program/erase stub that could drive this map: **SGFMUSTAT**
+`0xD0001C` (idle ≈ `0xC0`), **SGFMCMD** `0xD00020`. See
+`e46_m3_mk60_kline_access_and_flash.md` (“Flash write path (SGFM)”) and `zcp_mfg_exec_path.md` §4.
+[C] for the manual map and privilege rule; [C] that user-mode probes fault; **[open]** that a
+supervisor stub can complete a live program or erase.
 
 ## 4. KWP service table: no download, no programming session
 Both the 817.3 and 818.3 images carry the **same 17-service KWP table** (817.3 at `0x3F358`, 818.3
@@ -101,17 +118,20 @@ hardware/ID gate. [C] for the image identity; [I] for where the gate lives.
 
 ## 7. What routes remain (research only)
 With no resident programming path, the only routes that could in principle write this flash are:
-1. Upload a transient routine into SRAM via the factory K-line RAM-exec path and have **it** drive
-   the SGFM controller — contingent on finding the controller base (not in the image) and on the
-   SGFM protection/security registers allowing it. [open]
+1. Upload a transient routine into SRAM via the factory K-line RAM-exec path (A5 then A6 **K / L / K / O**,
+ proven for RAM by Heinz, NAM3 #147) and have **it** elevate with `mfcr r1, SS4` (`0x10A1`). Elevate
+ is proven on the 818.3 spare. Elevated reads of the MMC2114-family candidate base `0x00D00000`
+ faulted (2026-11-26, `e46_m3_mk60_elevated_mmio_findings.md`). A live program or erase is **not**
+ demonstrated. [open]
 2. A bench **BDM/OnCE** route: the M·CORE OnCE port's lockout-recovery mass-erases the whole array
-   (clearing the security word), after which the part is unsecured — destructive, requires a full
-   known-good image to restore, and the OnCE lines are not on the vehicle connector (open-unit
-   only). [C] that the mechanism exists; [I] that it yields a usable reflash.
+ (clearing the security word), after which the part is unsecured — destructive, requires a full
+ known-good image to restore, and the OnCE lines are not on the vehicle connector (open-unit
+ only). [C] that the mechanism exists; [I] that it yields a usable reflash.
 
-The highest-value next step is obtaining an actual flashable-unit bootloader image or a captured
-authenticated flash session, since the application images do not contain the programming path.
-The datasheet JTAG/OnCE connector pinout is in section 8.
+SS4 elevate is proven on the 818.3 spare; the elevated SGFMUSTAT read faulted (2026-11-26, see
+`e46_m3_mk60_elevated_mmio_findings.md`). A program/erase stub is not shown. A flashable-unit bootloader image or a captured
+authenticated flash session would still be independent evidence, since the application images do
+not contain a resident programming path.
 
 ## 8. JTAG/OnCE connector pinout (MMC2114D reference)
 On this M·CORE part the BDM-equivalent debug interface is the **JTAG/OnCE port**. The MMC2114D
@@ -141,16 +161,29 @@ for OnCE operation; they exist only for the optional high-speed download interfa
 This is the generic MMC2114 recommended connector from the datasheet — what the silicon exposes —
 not a verified mapping of pads or a harness on any MK60 board.
 
+Live E46 MK60 818.3 (M3) bench work since this section was first drafted strengthens why this
+pinout matters: elevated/diag-session probes of the MMC2114-family SGFM/clock windows fault or
+no-reply, and the on-chip EFFFxx NVM controller is structurally a data-NVM path (not the
+18-bit code-flash programmer). With no resident code-flash path reachable from mfg/diag context,
+OnCE/BDM on a spare remains the named hardware lever. Board-level pad identification against this
+14-pin reference is still **[open]** — nothing in the K-line work touched TCK/TMS/TDI/TDO/TRST.
+
 ## Open questions
-- [ ] Flash-controller register base on this customised silicon (not in the firmware).
+- [x] SS4 elevate (`0x10A1`) on the 818.3 spare, 2026-11-26. The following elevated halfword
+ reads of the MMC2114-family candidate bases faulted. See
+ `e46_m3_mk60_elevated_mmio_findings.md`.
+- [ ] A live program or erase. Not shown. Next lever named there: OnCE/BDM on a spare.
 - [ ] Whether the SGFM protection registers (seeded from the 0x200 field) would allow a RAM routine
-      to program the cal pages at all.
+ to program the cal pages at all.
 - [ ] Whether a program must also write the ECC window at `0x00100000+`, or ECC is automatic.
 - [ ] The external programming path (bootloader / authenticated mode); not present in any image here.
 
 ## Method
 The `lrw` peripheral scan, the KWP service-table parse, and the 0x27 / 0x31 handler reads were done
 on the raw 817.3, 818.3 and 820.3 dumps and a headless Ghidra recovery of these public images,
-cross-referenced with Freescale AN2286 / AN1756 and the SGFM/CFM register model. The "no bootloader
+cross-referenced with the [*MMC2114 Advance Information Manual* (MMC2114/D Rev. 1, April 2002)](../docs/references/MMC2114D_Rev1_Apr2002.pdf),
+Freescale AN2286, and the SGFM register model. The `0x00D00000` base, supervisor-only rule, and
+command-buffer sequence are from that manual (Table 10-2, §10.8.3.2), in this repo at `docs/references/MMC2114D_Rev1_Apr2002.pdf`; user-mode probe faults are
+the matching bench pattern. The "no bootloader
 / no flash code" result is the one already recorded in the image notes, re-confirmed here and tied
 to the SGFM technology. No BIN was written and nothing was written to a car.
