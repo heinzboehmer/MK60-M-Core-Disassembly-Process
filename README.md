@@ -53,6 +53,7 @@ tools/
   parse_0pa.py            BMW .0pa  ->  CPU-address Intel HEX + region .bin files
   find_boundary.py        prologue-scan: arch check + programmatic code/data boundary
   port_symbols.py         cross-image symbol porting by function signature
+  ss4_ustat_probe.py      read-only SS4 escape stub and mfg A5/A6/A4 dry-run frames
   decode_coding.py        decode + verify an E46 95040 coding block via a local NCS-Dummy export
   analyze_dump.py         flash-writability triage for an image (0x200, KWP services, loader)
   mmioscan.py             list lrw MMIO-band literals + code sites (M·CORE)
@@ -63,6 +64,29 @@ tools/
     mcore_import.sh  mcore_recover.sh  mcore_verify.sh  mcore_port.sh  dump.sh
     scripts/*.java        the Ghidra analysis scripts the drivers run
 ```
+
+
+## SS4 status probe (read-only)
+
+`tools/ss4_ustat_probe.py` builds a short user-mode stub for the E46 non-M
+MK60 (818.3 / 820.3). The stub starts with `mfcr r1, SS4` (`0x10A1`) so the
+privilege handler elevates, then halfword-reads SGFMUSTAT at `0x00D0001C`
+into scratch RAM and stores marker `0x55A4` for an `0xA4` readback. Stdout
+is the stub, its disassembly, and dry-run manufacturing frames (level raise,
+`0xA5` plant, `0xA6 'O'` execute, `0xA4` read). It does not open a serial
+port and it does not program flash. Bench steps and the length/sum assumptions
+are in the script docstring and in that printout.
+
+```bash
+python3 tools/ss4_ustat_probe.py
+python3 tools/ss4_ustat_probe.py --variant 820.3
+python3 tools/ss4_ustat_probe.py --check
+```
+
+The knock, framing and RAM `jsr` are the factory protocol in
+[analysis/mfg_test_cycle.md](analysis/mfg_test_cycle.md),
+[analysis/nonm_mk60_image.md](analysis/nonm_mk60_image.md) and
+[analysis/zcp_mfg_exec_path.md](analysis/zcp_mfg_exec_path.md).
 
 ## Scope
 
