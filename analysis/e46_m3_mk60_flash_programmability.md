@@ -67,9 +67,16 @@ That does not mean the address is unknown. The [*MMC2114 Advance Information Man
 Rev. 1, April 2002)](../docs/references/MMC2114D_Rev1_Apr2002.pdf) maps FLASH registers (SGFM) at **`0x00D00000`** (CMFR occupied the same slot on
 the MMC2107). Table 10-2 marks every SGFM register **supervisor access only**: user-mode accesses
 have no effect and result in a cycle-termination transfer error. Bench probes of `0xD00000` from a
-user-mode RAM stub faulted in exactly that way — the address was right; the privilege was not. The
-earlier “base not pinned; also try `0x00F60000`” wording is superseded. Register offsets used by a
-program/erase stub: **SGFMUSTAT** `0xD0001C` (idle ≈ `0xC0`), **SGFMCMD** `0xD00020`. See
+user-mode RAM stub faulted in exactly that way. The
+earlier “base not pinned; also try `0x00F60000`” wording is superseded by the manual map in this
+section. Elevated bench, 2026-11-26: after `0x10A1` set supervisor, halfword reads of `0xD0001C`
+and the other `0xD00000` offsets tried, and a single probe of `0x00F60000`, still faulted (no
+survival `0x66`). Those MMC2114-family candidate bases are not a live flash-controller map from
+elevated mfg A6 exec on this 818.3. The manual cite above stays. See
+`e46_m3_mk60_elevated_mmio_findings.md`.
+
+Register offsets in that manual, for a program/erase stub that could drive this map: **SGFMUSTAT**
+`0xD0001C` (idle ≈ `0xC0`), **SGFMCMD** `0xD00020`. See
 `e46_m3_mk60_kline_access_and_flash.md` (“Flash write path (SGFM)”) and `zcp_mfg_exec_path.md` §4.
 [C] for the manual map and privilege rule; [C] that user-mode probes fault; **[open]** that a
 supervisor stub can complete a live program or erase.
@@ -112,23 +119,25 @@ hardware/ID gate. [C] for the image identity; [I] for where the gate lives.
 ## 7. What routes remain (research only)
 With no resident programming path, the only routes that could in principle write this flash are:
 1. Upload a transient routine into SRAM via the factory K-line RAM-exec path (A5 then A6 **K / L / K / O**,
-   proven for RAM by Heinz, NAM3 #147) and have **it** elevate with `mfcr r1, SS4` (`0x10A1`), then drive
-   SGFM at `0x00D00000`. Still contingent on the SGFM protection/security registers allowing the access,
-   and on a live program/erase actually completing — **not yet demonstrated**. [open]
+   proven for RAM by Heinz, NAM3 #147) and have **it** elevate with `mfcr r1, SS4` (`0x10A1`). Elevate
+   is proven on the 818.3 spare. Elevated reads of the MMC2114-family candidate base `0x00D00000`
+   faulted (2026-11-26, `e46_m3_mk60_elevated_mmio_findings.md`). A live program or erase is **not**
+   demonstrated. [open]
 2. A bench **BDM/OnCE** route: the M·CORE OnCE port's lockout-recovery mass-erases the whole array
    (clearing the security word), after which the part is unsecured — destructive, requires a full
    known-good image to restore, and the OnCE lines are not on the vehicle connector (open-unit
    only). [C] that the mechanism exists; [I] that it yields a usable reflash.
 
-The highest-value software next step on this path is the SS4 elevate plus an SGFMUSTAT read
-(idle ≈ `0xC0`), then a program/erase stub. A flashable-unit bootloader image or a captured
+SS4 elevate is proven on the 818.3 spare; the elevated SGFMUSTAT read faulted (2026-11-26, see
+`e46_m3_mk60_elevated_mmio_findings.md`). A program/erase stub is not shown. A flashable-unit bootloader image or a captured
 authenticated flash session would still be independent evidence, since the application images do
 not contain a resident programming path.
 
 ## Open questions
-- [ ] SS4 elevate (`0x10A1`) + halfword-read of SGFMUSTAT ≈ `0xC0`, then a live program/erase stub
-      at SGFM `0x00D00000`. The family base and privilege rule are identified; the write is not yet
-      green on hardware.
+- [x] SS4 elevate (`0x10A1`) on the 818.3 spare, 2026-11-26. The following elevated halfword
+      reads of the MMC2114-family candidate bases faulted. See
+      `e46_m3_mk60_elevated_mmio_findings.md`.
+- [ ] A live program or erase. Not shown. Next lever named there: OnCE/BDM on a spare.
 - [ ] Whether the SGFM protection registers (seeded from the 0x200 field) would allow a RAM routine
       to program the cal pages at all.
 - [ ] Whether a program must also write the ECC window at `0x00100000+`, or ECC is automatic.

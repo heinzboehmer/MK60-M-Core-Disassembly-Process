@@ -143,6 +143,13 @@ width-restricted or write-only; the mfg protocol has no native-width READ (0xA4 
 is write-only on 0xA5), so reading those would require the code-exec path (upload a ld.w/ld.h stub, run via
 0xA6 'O', read the result from RAM). Reads are brick-safe EXCEPT the 0xEF8xxx hard-hang above.
 
+## See also
+
+Elevated halfword sweeps on an 818.3 spare (2026-11-26), after `mfcr r1,ss4` (`0x10A1`),
+re-checked these banks. The known islands stayed live. `0xEF8304`–`0xEF830A` hung (12 V drop;
+KL30 to resume) — do not probe `0xEF8200`–`0xEF8503`. Record:
+`e46_m3_mk60_elevated_mmio_findings.md`.
+
 ## Provenance / confidence
 - Banks and register offsets: code-section pool-word clustering (scan of the raw bin) plus dump.sh on the
   reader functions listed above.
@@ -154,4 +161,4 @@ is write-only on 0xA5), so reading those would require the code-exec path (uploa
   caveat is a peripheral addressed only through a base register with no literal pool word, which a pool scan
   cannot see).
 
-Companion documents: `nonm_mk60_image.md`, `zcp_can_frames.md`, `zcp_mfg_exec_path.md`, `mfg_test_cycle.md`.
+Companion documents: `nonm_mk60_image.md`, `zcp_can_frames.md`, `zcp_mfg_exec_path.md`, `mfg_test_cycle.md`, `e46_m3_mk60_elevated_mmio_findings.md`.

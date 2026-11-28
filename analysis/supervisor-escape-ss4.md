@@ -157,3 +157,7 @@ sentinels prove the stub executes regardless.
 - Confirm elevation persists long enough, and across the KL/L-append framing, for a full program sequence.
 - The part reads UNSECURED (security word 0xFFFFFFFF), so no backdoor/mass-erase is needed once we can
   drive the controller.
+- Elevated halfword reads of the MMC2114-family candidate bases (`0xD0001C` and the other `0xD00000`
+  offsets tried; a single probe of `0x00F60000`) faulted after this elevate on the 818.3 spare
+  (2026-11-26). Not a live flash-controller map from elevated mfg A6 exec. See
+  `e46_m3_mk60_elevated_mmio_findings.md`.

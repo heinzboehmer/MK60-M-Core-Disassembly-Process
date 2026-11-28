@@ -176,10 +176,10 @@ write+exec sequence.
    comparison and nothing written to flash. The staged routine drives the CAN controller directly (init a
    mailbox, push, wait for complete), since the mfg session runs independently of the application's CAN task.
    **Still open.**
-4. **SS4 elevate + SGFM program/erase stub.** After the above: run `mfcr r1, SS4` (encoding
-   **`0x10A1`**) to elevate, halfword-read SGFMUSTAT at `0xD0001C` and expect idle ≈ `0xC0`, then a
-   program/erase stub using the command-buffer sequence below. **Still open** — no live program or
-   erase has been demonstrated. A5/A6 themselves do not program flash.
+4. **SS4 elevate + SGFM program/erase stub.** `mfcr r1, SS4` (`0x10A1`) elevate is proven on the
+   818.3 spare (2026-11-26). The elevated halfword read of SGFMUSTAT at `0xD0001C` faulted; see
+   `e46_m3_mk60_elevated_mmio_findings.md`. No live program or erase has been demonstrated. A5/A6
+   themselves do not program flash.
 
 ---
 
@@ -195,10 +195,10 @@ MMC2107, SGFM on the MMC2114 / MMC2113 / MMC2112. The SC5500xx firmware names SG
 (also covering MMC2113 and MMC2112), system memory map and Section 10, Table 10-2.
 The manual is in this repo at `docs/references/MMC2114D_Rev1_Apr2002.pdf`.
 
-Bench probes of `0xD00000` from a user-mode RAM stub faulted not because the address was wrong, but
-because **every SGFM register is supervisor-only**. The manual states that user-mode accesses to
-supervisor-only addresses have no effect and result in a cycle-termination transfer error. That
-matches the bench fault pattern.
+Bench probes of `0xD00000` from a user-mode RAM stub faulted. The manual states that user-mode
+accesses to supervisor-only addresses have no effect and result in a cycle-termination transfer
+error. Elevated bench, 2026-11-26: after `0x10A1` set supervisor, halfword reads of the
+MMC2114-family candidate bases still faulted. See `e46_m3_mk60_elevated_mmio_findings.md`.
 
 | Address | Register | Notes |
 |---|---|---|
@@ -214,8 +214,9 @@ a halfword-read of USTAT. Delivery is the proven manufacturer K-line path: A5 up
 A6 **K / L / K / O** (or `'O'`). On 818.3, the usual level-3 `'O'` descriptor is `0x401142`.
 
 Evidence so far: (a) the datasheet and family map identify SGFM; (b) bench user-mode faults match
-supervisor-only; (c) A5/A6 RAM exec is proven (Heinz #147); (d) SS4 elevate plus the SGFM program
-sequence is the remaining software path — **not yet green on hardware**.
+the supervisor-only rule in that manual; (c) A5/A6 RAM exec is proven (Heinz #147); (d) `0x10A1`
+elevate is proven on the 818.3 spare (2026-11-26), and elevated reads of the family candidate
+bases faulted. No live program or erase. See `e46_m3_mk60_elevated_mmio_findings.md`.
 
 ## 5. Open items / caveats / next steps
 
@@ -225,8 +226,9 @@ sequence is the remaining software path — **not yet green on hardware**.
 - **Watchdog:** whether a watchdog would reset a long `jsr` (interrupts masked) remains **open**.
 - **Brick risk:** everything here writes a live module. We hold the full dump to restore, and BDM/chip-off is
   the backstop. The proven path touches SRAM only; flash is unchanged by A5/A6 themselves.
-- **Flash routine:** SGFM is at `0x00D00000` (see §4). Milestone 4 is SS4 elevate (`0x10A1`) + read
-  USTAT ≈ `0xC0`, then a program/erase stub. That step is **not** demonstrated on hardware.
+- **Flash routine:** the family cite is SGFM at `0x00D00000` (see §4). `0x10A1` elevate is proven;
+  elevated reads of that candidate base faulted (2026-11-26,
+  `e46_m3_mk60_elevated_mmio_findings.md`). No program or erase has been demonstrated.
 
 ## Address quick-reference (ZCP)
 
